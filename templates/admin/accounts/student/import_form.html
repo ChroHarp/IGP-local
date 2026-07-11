@@ -1,0 +1,22 @@
+﻿{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <p>先使用「預覽」，確認新增與略過筆數後，再重新選擇同一檔案並按「確認寫入」。系統不會保存上傳的 Excel。</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button class="button" type="submit" name="action" value="preview">預覽</button>
+    <button class="button default" type="submit" name="action" value="apply">確認寫入</button>
+  </form>
+  {% if result %}
+    <h2>結果</h2>
+    <ul>
+      <li>可新增／已新增：{{ result.create_count }}</li>
+      <li>略過既有資料：{{ result.skip_count }}</li>
+    </ul>
+    {% if result.errors %}
+      <h3>錯誤</h3>
+      <ul>{% for error in result.errors %}<li>{{ error }}</li>{% endfor %}</ul>
+    {% endif %}
+  {% endif %}
+{% endblock %}

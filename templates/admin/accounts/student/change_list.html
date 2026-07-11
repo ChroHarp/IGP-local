@@ -1,0 +1,6 @@
+﻿{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  <li><a href="{% url 'admin:accounts_student_import' %}">匯入基礎資料</a></li>
+  {{ block.super }}
+{% endblock %}

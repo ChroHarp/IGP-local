@@ -1,0 +1,281 @@
+﻿from datetime import date
+from pathlib import Path
+from uuid import uuid4
+
+from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import Q
+from django.utils import timezone
+
+from .validators import validate_program_document
+
+
+class User(AbstractUser):
+    class Role(models.TextChoices):
+        SYSTEM_ADMIN = "system_admin", "技術系統管理員"
+        SPECIAL_EDUCATION_LEAD = "special_education_lead", "特教組長／主管"
+        CASE_MANAGER = "case_manager", "個管教師"
+        COURSE_TEACHER = "course_teacher", "任課教師"
+        HOMEROOM_TEACHER = "homeroom_teacher", "班級導師"
+        VIEWER = "viewer", "閱覽者"
+
+    email = models.EmailField("Google email", unique=True)
+    role = models.CharField("業務角色", max_length=32, choices=Role.choices, default=Role.VIEWER)
+    is_approved = models.BooleanField("已核准使用", default=False)
+
+    class Meta:
+        verbose_name = "系統使用者"
+        verbose_name_plural = "系統使用者"
+
+
+class SchoolSetting(models.Model):
+    name = models.CharField("學校名稱", max_length=100)
+    academic_year = models.CharField("目前學年度", max_length=16, blank=True)
+    updated_at = models.DateTimeField("更新時間", auto_now=True)
+
+    class Meta:
+        verbose_name = "學校設定"
+        verbose_name_plural = "學校設定"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class Student(models.Model):
+    class Gender(models.TextChoices):
+        UNSPECIFIED = "unspecified", "未填"
+        FEMALE = "female", "女"
+        MALE = "male", "男"
+        OTHER = "other", "其他／自述"
+
+    student_number = models.CharField("學號", max_length=32, unique=True, null=True, blank=True)
+    full_name = models.CharField("學生姓名", max_length=100)
+    gender = models.CharField("性別", max_length=16, choices=Gender.choices, default=Gender.UNSPECIFIED)
+    has_multiple_special_education_needs = models.BooleanField("雙重特教需求", default=False)
+    date_of_birth = models.DateField("出生日期", null=True, blank=True)
+    grade = models.PositiveSmallIntegerField("年級", null=True, blank=True)
+    class_name = models.CharField("班別", max_length=32, blank=True)
+    seat_number = models.PositiveSmallIntegerField("座號", null=True, blank=True)
+    email = models.EmailField("學生 Email", blank=True)
+    home_phone = models.CharField("住家電話", max_length=32, blank=True)
+    address = models.CharField("住址", max_length=255, blank=True)
+    is_active = models.BooleanField("在學／啟用", default=True)
+    created_at = models.DateTimeField("建立時間", auto_now_add=True)
+    updated_at = models.DateTimeField("更新時間", auto_now=True)
+
+    class Meta:
+        verbose_name = "學生"
+        verbose_name_plural = "學生"
+        ordering = ["grade", "class_name", "seat_number", "full_name"]
+
+    def clean(self):
+        if self.date_of_birth and self.date_of_birth > date.today():
+            raise ValidationError({"date_of_birth": "出生日期不可晚於今天。"})
+
+    def __str__(self):
+        return self.full_name
+
+
+class Guardian(models.Model):
+    class Relationship(models.TextChoices):
+        LEGAL_GUARDIAN = "legal_guardian", "法定代理人"
+        FATHER = "father", "父親"
+        MOTHER = "mother", "母親"
+        OTHER = "other", "其他"
+
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="guardians")
+    relationship = models.CharField("關係", max_length=24, choices=Relationship.choices, default=Relationship.LEGAL_GUARDIAN)
+    full_name = models.CharField("姓名", max_length=100)
+    phone_work = models.CharField("公司電話", max_length=32, blank=True)
+    phone_mobile = models.CharField("手機", max_length=32, blank=True)
+    email = models.EmailField("Email", blank=True)
+    is_primary = models.BooleanField("主要聯絡人", default=False)
+
+    class Meta:
+        verbose_name = "法定代理人"
+        verbose_name_plural = "法定代理人"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student"],
+                condition=Q(is_primary=True),
+                name="one_primary_guardian_per_student",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.student}－{self.full_name}"
+
+
+class FamilyMember(models.Model):
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="family_members")
+    relationship = models.CharField("稱謂", max_length=32)
+    full_name = models.CharField("姓名", max_length=100)
+    organization_or_school = models.CharField("服務機關／就讀學校", max_length=150, blank=True)
+    education_major = models.CharField("畢業科系", max_length=150, blank=True)
+    specialty = models.CharField("專長", max_length=255, blank=True)
+    phone = models.CharField("聯絡電話", max_length=32, blank=True)
+    sort_order = models.PositiveSmallIntegerField("排序", default=0)
+
+    class Meta:
+        verbose_name = "家庭成員"
+        verbose_name_plural = "家庭成員"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.student}－{self.relationship} {self.full_name}"
+
+
+class Teacher(models.Model):
+    full_name = models.CharField("教師姓名", max_length=150)
+    account = models.OneToOneField(
+        User,
+        verbose_name="登入帳號",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="teacher_profile",
+    )
+    is_active = models.BooleanField("啟用", default=True)
+
+    class Meta:
+        verbose_name = "教師"
+        verbose_name_plural = "教師"
+        ordering = ["full_name", "id"]
+
+    def __str__(self):
+        return self.full_name
+
+
+class StudentStaffAssignment(models.Model):
+    class Role(models.TextChoices):
+        CASE_MANAGER = "case_manager", "個管教師"
+        COURSE_TEACHER = "course_teacher", "任課教師"
+        HOMEROOM_TEACHER = "homeroom_teacher", "班級導師"
+        VIEWER = "viewer", "閱覽者"
+
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="staff_assignments")
+    staff = models.ForeignKey(Teacher, verbose_name="教師／人員", on_delete=models.PROTECT, related_name="student_assignments")
+    role = models.CharField("指派角色", max_length=24, choices=Role.choices)
+    start_date = models.DateField("開始日期", default=timezone.localdate)
+    end_date = models.DateField("結束日期", null=True, blank=True)
+    is_active = models.BooleanField("啟用", default=True)
+
+    class Meta:
+        verbose_name = "學生教師指派"
+        verbose_name_plural = "學生教師指派"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "staff", "role", "start_date"],
+                name="unique_student_staff_role_start_date",
+            ),
+        ]
+
+    def clean(self):
+        if self.end_date and self.end_date < self.start_date:
+            raise ValidationError({"end_date": "結束日期不得早於開始日期。"})
+
+    def __str__(self):
+        return f"{self.student}－{self.staff}（{self.get_role_display()}）"
+
+def private_document_upload_to(instance, filename):
+    suffix = Path(filename).suffix.lower()
+    return f"documents/{timezone.now():%Y/%m}/{uuid4().hex}{suffix}"
+
+
+class ProgramDocument(models.Model):
+    class DocumentType(models.TextChoices):
+        COURSE_PLAN = "course_plan", "課程計畫"
+        TIMETABLE = "timetable", "課表"
+
+    public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    document_type = models.CharField("文件類型", max_length=24, choices=DocumentType.choices)
+    title = models.CharField("文件標題", max_length=150)
+    academic_year = models.CharField("學年度", max_length=16, blank=True)
+    semester = models.PositiveSmallIntegerField("學期", null=True, blank=True)
+    document_file = models.FileField("檔案", upload_to=private_document_upload_to, validators=[validate_program_document])
+    original_filename = models.CharField("原始檔名", max_length=255, editable=False)
+    uploaded_by = models.ForeignKey(User, verbose_name="上傳者", on_delete=models.SET_NULL, null=True, editable=False)
+    uploaded_at = models.DateTimeField("上傳時間", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "課程文件"
+        verbose_name_plural = "課程文件"
+        ordering = ["-uploaded_at"]
+
+    def clean(self):
+        super().clean()
+        validate_program_document(self.document_file)
+        if self.semester not in {None, 1, 2}:
+            raise ValidationError({"semester": "學期只能是 1 或 2。"})
+
+    def save(self, *args, **kwargs):
+        if self.document_file and not self.original_filename:
+            self.original_filename = Path(self.document_file.name).name
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.title
+
+class InitialIGPProfile(models.Model):
+    student = models.OneToOneField(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="initial_igp_profile")
+    raw_response = models.JSONField("原始完整回覆", default=dict, editable=False)
+    source_submitted_at = models.CharField("原始填表時間", max_length=64, blank=True)
+    source_email = models.CharField("原始填表 Email", max_length=254, blank=True)
+    additional_family_notes = models.TextField("其他家庭成員說明", blank=True)
+    family_culture = models.TextField("家庭文化特質", blank=True)
+    primary_caregiver = models.TextField("主要照顧者", blank=True)
+    learning_supporter = models.TextField("主要協助學習者", blank=True)
+    household_economy = models.TextField("家庭經濟狀況", blank=True)
+    caregiving_style = models.TextField("照顧者管教態度", blank=True)
+    family_interaction = models.TextField("與家人互動情形", blank=True)
+    math_aptitude_score = models.CharField("數學性向測驗分數", max_length=64, blank=True)
+    science_aptitude_score = models.CharField("自然性向測驗分數", max_length=64, blank=True)
+    math_practical_t_score = models.CharField("數學實作評量 T 分數", max_length=64, blank=True)
+    science_practical_t_score = models.CharField("自然實作評量 T 分數", max_length=64, blank=True)
+    science_interests = models.TextField("科學興趣", blank=True)
+    arts_interests = models.TextField("人文與藝術興趣", blank=True)
+    other_interests = models.TextField("其他興趣", blank=True)
+    other_awards_notes = models.TextField("其他得獎紀錄", blank=True)
+    completed_by = models.CharField("填寫者", max_length=100, blank=True)
+    cognitive_strengths = models.TextField("認知優勢特質", blank=True)
+    emotional_strengths = models.TextField("情意優勢特質", blank=True)
+    academic_strengths = models.TextField("學科優勢能力", blank=True)
+    cognitive_needs = models.TextField("認知弱勢特質", blank=True)
+    emotional_needs = models.TextField("情意弱勢特質", blank=True)
+    academic_needs = models.TextField("學科弱勢能力", blank=True)
+    notes = models.TextField("其他補充說明事項", blank=True)
+    updated_at = models.DateTimeField("更新時間", auto_now=True)
+
+    class Meta:
+        verbose_name = "初始 IGP 概況"
+        verbose_name_plural = "初始 IGP 概況"
+
+    def __str__(self):
+        return f"{self.student}－初始 IGP 概況"
+
+
+class AwardRecord(models.Model):
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="award_records")
+    award_date = models.CharField("獲獎日期", max_length=64, blank=True)
+    activity_name = models.CharField("競賽／活動名稱", max_length=255, blank=True)
+    organizer = models.CharField("主辦單位", max_length=255, blank=True)
+    award = models.CharField("獎項", max_length=255, blank=True)
+    award_type = models.CharField("得獎類型", max_length=100, blank=True)
+
+    class Meta:
+        verbose_name = "得獎紀錄"
+        verbose_name_plural = "得獎紀錄"
+
+    def __str__(self):
+        return f"{self.student}－{self.activity_name or '得獎紀錄'}"
+
+
+
+
+
+

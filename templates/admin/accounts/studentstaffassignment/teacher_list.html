@@ -1,0 +1,19 @@
+﻿{% extends "admin/base_site.html" %}
+{% block content %}
+<div id="content-main">
+  <p><a class="button" href="{% url 'admin:accounts_studentstaffassignment_teacher_add' %}">新增教師</a></p>
+  <p>選擇教師後，以核取方塊一次指派多位學生。</p>
+  <table id="result_list">
+    <thead><tr><th>教師</th><th>業務角色</th><th>登入帳號</th><th>有效指派數</th><th></th></tr></thead>
+    <tbody>
+      {% for teacher, active_roles, active_count in teacher_rows %}
+      <tr><td>{{ teacher.full_name }}</td><td>{{ active_roles }}</td><td>{{ teacher.account.email|default:"尚未綁定" }}</td><td>{{ active_count }}</td><td><a class="button" href="{% url 'admin:accounts_studentstaffassignment_teacher' teacher.pk %}">設定帳號／指派學生</a></td></tr>
+      {% empty %}
+      <tr><td colspan="5">尚無教師。請按上方「新增教師」。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+

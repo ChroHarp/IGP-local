@@ -1,0 +1,126 @@
+{% extends "admin/change_form.html" %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+.student-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.25rem; border-bottom: 1px solid var(--border-color, #ccc); padding-bottom: .6rem; }
+.student-tabs button { appearance: none; border: 1px solid var(--border-color, #ccc); background: var(--body-bg, #fff); color: var(--body-fg, #333); border-radius: 4px; padding: .5rem .8rem; font: inherit; cursor: pointer; }
+.student-tabs button[aria-selected="true"] { background: var(--primary, #417690); border-color: var(--primary, #417690); color: #fff; }
+.student-tabs button:hover { border-color: var(--primary, #417690); }
+.student-tabs button:focus-visible { outline: 3px solid var(--focus-color, #0e7490); outline-offset: 2px; }
+.student-tab-panel { min-width: 0; }
+.student-tab-panel[hidden] { display: none; }
+.tag-checkboxes { display: flex; flex-wrap: wrap; gap: .4rem; max-width: 72rem; }
+.tag-checkboxes > div { display: contents; }
+.tag-checkboxes label { display: inline-flex; align-items: center; gap: .3rem; float: none; width: auto; margin: 0; border: 1px solid var(--border-color, #b8c5cc); border-radius: 999px; background: var(--body-bg, #fff); padding: .28rem .58rem; color: var(--body-fg, #222); cursor: pointer; }
+#student-panel-igp .tag-checkboxes label { flex: 0 0 auto; width: fit-content; }
+.tag-checkboxes label:has(input:checked) { background: var(--primary, #417690); border-color: var(--primary, #417690); color: #fff; }
+.tag-checkboxes input { accent-color: var(--primary, #417690); }
+.tag-checkboxes label:focus-within { outline: 3px solid var(--focus-color, #0e7490); outline-offset: 2px; }
+.field-additional_family_notes textarea { height: 3.5rem; min-height: 3.5rem; }
+/* Import template fields: short IDs/classes, medium names/phones, long email/address. */
+.student-tab-panel input[type="text"],
+.student-tab-panel input[type="email"],
+.student-tab-panel input[type="tel"],
+.student-tab-panel input[type="number"],
+.student-tab-panel input[type="date"] { box-sizing: border-box; inline-size: min(100%, 18rem); }
+.student-tab-panel textarea { box-sizing: border-box; inline-size: min(100%, 44rem); }
+.student-tab-panel .field-student_number input { inline-size: min(100%, 10rem); }
+.student-tab-panel .field-full_name input,
+.student-tab-panel .field-guardian_name input { inline-size: min(100%, 14rem); }
+.student-tab-panel .field-grade input,
+.student-tab-panel .field-class_name input,
+.student-tab-panel .field-seat_number input,
+.student-tab-panel .field-date_of_birth input { inline-size: min(100%, 8rem); }
+.student-tab-panel .field-email input { inline-size: min(100%, 26rem); }
+.student-tab-panel .field-home_phone input,
+.student-tab-panel .field-phone_work input,
+.student-tab-panel .field-phone_mobile input { inline-size: min(100%, 16rem); }
+.student-tab-panel .field-address input { inline-size: min(100%, 38rem); }
+@media (max-width: 600px) { .student-tabs { gap: .35rem; } .student-tabs button { flex: 1 1 42%; } }
+</style>
+{% endblock %}
+
+{% block field_sets %}
+<nav class="student-tabs" aria-label="學生資料頁籤" role="tablist">
+  <button type="button" role="tab" id="student-tab-basic" aria-selected="true" aria-controls="student-panel-basic">基本資料</button>
+  <button type="button" role="tab" id="student-tab-family" aria-selected="false" aria-controls="student-panel-family">家庭與聯絡</button>
+  <button type="button" role="tab" id="student-tab-igp" aria-selected="false" aria-controls="student-panel-igp">學生能力分析</button>
+  <button type="button" role="tab" id="student-tab-awards" aria-selected="false" aria-controls="student-panel-awards">得獎與紀錄</button>
+</nav>
+<section class="student-tab-panel" id="student-panel-basic" role="tabpanel" aria-labelledby="student-tab-basic">
+  {{ block.super }}
+  <div id="student-basic-profile-fields"></div>
+</section>
+{% endblock %}
+
+{% block inline_field_sets %}
+{% with guardian=inline_admin_formsets.0 family=inline_admin_formsets.1 profile=inline_admin_formsets.2 awards=inline_admin_formsets.3 %}
+<section class="student-tab-panel" id="student-panel-family" role="tabpanel" aria-labelledby="student-tab-family">
+  {% include guardian.opts.template with inline_admin_formset=guardian %}
+  {% include family.opts.template with inline_admin_formset=family %}
+  {% include profile.opts.template with inline_admin_formset=profile %}
+  <div id="student-family-profile-fields"></div>
+</section>
+<section class="student-tab-panel" id="student-panel-igp" role="tabpanel" aria-labelledby="student-tab-igp">
+  <div id="student-ability-profile-fields"></div>
+</section>
+<section class="student-tab-panel" id="student-panel-awards" role="tabpanel" aria-labelledby="student-tab-awards">
+  {% include awards.opts.template with inline_admin_formset=awards %}
+  <div id="student-award-profile-fields"></div>
+</section>
+{% endwith %}
+{% endblock %}
+
+{% block admin_change_form_document_ready %}
+{{ block.super }}
+<script>
+(() => {
+  const tabs = [...document.querySelectorAll('.student-tabs [role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls')));
+  const profile = document.querySelector('#student-panel-family #initial_igp_profile-group');
+  if (profile) {
+    const basicDest = document.getElementById('student-basic-profile-fields');
+    if (basicDest) {
+      basicDest.appendChild(profile);
+    }
+    const move = (selector, target) => {
+      const fieldset = profile.querySelector(selector);
+      const destination = document.getElementById(target);
+      if (fieldset && destination) destination.appendChild(fieldset);
+    };
+    move('.family-fields', 'student-family-profile-fields');
+    move('.ability-fields', 'student-ability-profile-fields');
+    move('.strength-fields', 'student-ability-profile-fields');
+    move('.award-fields', 'student-award-profile-fields');
+    move('.field-additional_family_notes', 'family_members-group');
+  }
+  const select = (tab) => {
+    tabs.forEach((item, index) => {
+      const selected = item === tab;
+      item.setAttribute('aria-selected', String(selected));
+      panels[index].hidden = !selected;
+    });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => select(tab));
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      select(tabs[next]);
+    });
+  });
+  select(tabs[0]);
+})();
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+

@@ -1,0 +1,15 @@
+﻿{% extends "admin/base_site.html" %}
+{% block content %}
+<div id="content-main">
+  <form method="post">
+    {% csrf_token %}
+    <fieldset class="module aligned">
+      {{ form.as_div }}
+    </fieldset>
+    <p>此處只需建立教師姓名；各種指派身分與登入帳號可在下一頁設定。</p>
+    <div class="submit-row"><input type="submit" value="建立教師並指派學生" class="default"></div>
+  </form>
+</div>
+{% endblock %}
+
+

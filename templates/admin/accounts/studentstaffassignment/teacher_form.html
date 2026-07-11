@@ -1,0 +1,25 @@
+﻿{% extends "admin/base_site.html" %}
+{% block content %}
+<div id="content-main">
+  <h1>{{ title }}</h1>
+  <p>每一種身分各自儲存，不會覆蓋其他身分的學生。</p>
+  <form method="post">
+    {% csrf_token %}
+    {{ form.account.as_field_group }}
+    <fieldset class="module aligned">
+      <h2>班級導師</h2>
+      <div class="form-row"><div><label>{{ form.homeroom_students.label }}：</label>{{ form.homeroom_students }}</div></div>
+    </fieldset>
+    <fieldset class="module aligned">
+      <h2>個管教師</h2>
+      <div class="form-row"><div><label>{{ form.case_manager_students.label }}：</label>{{ form.case_manager_students }}</div></div>
+    </fieldset>
+    <fieldset class="module aligned">
+      <h2>任課教師</h2>
+      <div class="form-row"><div><label>{{ form.course_students.label }}：</label>{{ form.course_students }}</div></div>
+    </fieldset>
+    <p>取消某組內的勾選只會停用該身分的指派；歷程不會刪除。</p>
+    <div class="submit-row"><input type="submit" value="儲存全部身分指派" class="default"></div>
+  </form>
+</div>
+{% endblock %}
