@@ -322,6 +322,14 @@ class IGPPlan(models.Model):
     academic_year = models.CharField("學年度", max_length=16)
     overall_goal = models.TextField("年度目標")
     notes = models.TextField("備註", blank=True)
+    cognitive_strengths = models.TextField("認知優勢特質", blank=True)
+    emotional_strengths = models.TextField("情意優勢特質", blank=True)
+    academic_strengths = models.TextField("學科優勢能力", blank=True)
+    cognitive_needs = models.TextField("認知弱勢特質", blank=True)
+    emotional_needs = models.TextField("情意弱勢特質", blank=True)
+    academic_needs = models.TextField("學科弱勢能力", blank=True)
+    qualitative_analysis = models.TextField("優弱勢能力綜合評析（質性描述）", blank=True)
+    learning_strategies = models.TextField("學習策略", blank=True)
 
     class Meta:
         verbose_name = "IGP 年度計畫"
@@ -340,6 +348,7 @@ class SemesterPlan(models.Model):
 
     igp_plan = models.ForeignKey(IGPPlan, verbose_name="IGP 年度計畫", on_delete=models.CASCADE, related_name="semester_plans")
     semester = models.PositiveSmallIntegerField("學期", choices=Semester.choices)
+    course_needs_assessment = models.TextField("課程需求評估", blank=True)
     goals = models.TextField("學期目標")
     strategies = models.TextField("執行策略", blank=True)
 
@@ -356,8 +365,14 @@ class SemesterPlan(models.Model):
 class CoursePlan(models.Model):
     semester_plan = models.ForeignKey(SemesterPlan, verbose_name="學期計畫", on_delete=models.CASCADE, related_name="course_plans")
     course_name = models.CharField("課程名稱", max_length=150)
+    teacher = models.ForeignKey(Teacher, verbose_name="授課教師", on_delete=models.PROTECT, null=True, blank=True, related_name="course_plans")
     goals = models.TextField("課程目標")
     activities = models.TextField("學習活動／調整", blank=True)
+    learning_domains = models.TextField("領域學習課程", blank=True)
+    special_needs_courses = models.TextField("特殊需求課程", blank=True)
+    cognitive_adjustments = models.TextField("認知教學方面", blank=True)
+    affective_support = models.TextField("情意輔導方面", blank=True)
+    skill_training = models.TextField("技能培訓方面", blank=True)
 
     class Meta:
         verbose_name = "課程計畫"
@@ -366,6 +381,43 @@ class CoursePlan(models.Model):
 
     def __str__(self):
         return f"{self.semester_plan}－{self.course_name}"
+
+
+class LearningPerformance(models.Model):
+    course_plan = models.ForeignKey(CoursePlan, verbose_name="課程計畫", on_delete=models.CASCADE, related_name="learning_performances")
+    description = models.TextField("學習表現")
+    adjustment = models.TextField("學習表現調整", blank=True)
+    assessment_methods = models.TextField("評量方式", blank=True)
+    sort_order = models.PositiveSmallIntegerField("項次", default=1)
+
+    class Meta:
+        verbose_name = "學習表現條目"
+        verbose_name_plural = "學習表現條目"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.course_plan}－{self.sort_order}"
+
+
+class LearningOutcomeRating(models.Model):
+    class Rating(models.IntegerChoices):
+        TRY_HARDER = 1, "○1 再努力"
+        FAIR = 2, "○2 尚可"
+        GOOD = 3, "○3 良好"
+        EXCELLENT = 4, "○4 優異"
+
+    learning_performance = models.OneToOneField(LearningPerformance, verbose_name="學習表現", on_delete=models.CASCADE, related_name="rating")
+    rating = models.PositiveSmallIntegerField("教師評分", choices=Rating.choices)
+    notes = models.TextField("評語", blank=True)
+    updated_by = models.ForeignKey(User, verbose_name="評分教師帳號", on_delete=models.SET_NULL, null=True, blank=True)
+    updated_at = models.DateTimeField("更新時間", auto_now=True)
+
+    class Meta:
+        verbose_name = "學習成果評分"
+        verbose_name_plural = "學習成果評分"
+
+    def __str__(self):
+        return f"{self.learning_performance}－{self.get_rating_display()}"
 
 
 class LearningOutcome(models.Model):

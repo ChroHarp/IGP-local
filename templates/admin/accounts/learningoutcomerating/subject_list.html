@@ -1,0 +1,24 @@
+﻿{% extends "admin/base_site.html" %}
+{% block content %}
+<div id="content-main">
+  {% if subjects %}
+  <table>
+    <thead><tr><th>學年度</th><th>學期</th><th>科目</th><th>授課教師</th><th>學生人數</th><th></th></tr></thead>
+    <tbody>
+    {% for item in subjects %}
+      <tr>
+        <td>{{ item.plan.semester_plan.igp_plan.academic_year }}</td>
+        <td>{{ item.plan.semester_plan.get_semester_display }}</td>
+        <td>{{ item.plan.course_name }}</td>
+        <td>{{ item.plan.teacher|default:"尚未指定" }}</td>
+        <td>{{ item.student_count }}</td>
+        <td><a class="button" href="{% url 'admin:accounts_learningoutcomerating_subject' item.plan.pk %}">開始評分</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>目前沒有可評分的課程。請先確認課程已指定授課教師，且學生已指派給該任課教師。</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -3,8 +3,10 @@ from pathlib import Path
 
 from django import forms
 from django.db.models import Q
+from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
-from .models import IGPPlan, InitialIGPProfile, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
+from .models import CoursePlan, IGPPlan, InitialIGPProfile, LearningPerformance, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 
 
 def split_choices(value):
@@ -129,7 +131,7 @@ class TeacherCreateForm(forms.ModelForm):
             is_active=True, is_approved=True, teacher_profile__isnull=True
         ).order_by("email", "username")
         self.fields["account"].required = False
-        self.fields["account"].help_text = "???????????????????"
+        self.fields["account"].help_text = "可先留空，之後也可在教師指派頁面媒合。"
 
 
 class BulkIGPPlanForm(forms.Form):
@@ -162,3 +164,53 @@ class CopySemesterPlanForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.fields["students"].queryset = students if students is not None else Student.objects.filter(is_active=True)
         self.fields["academic_year"].initial = academic_year
+
+
+class IGPPlanForm(forms.ModelForm):
+    cognitive_strengths = InitialIGPProfileForm.tag_field("認知優勢特質", InitialIGPProfileForm.COGNITIVE)
+    emotional_strengths = InitialIGPProfileForm.tag_field("情意優勢特質", InitialIGPProfileForm.EMOTIONAL)
+    academic_strengths = InitialIGPProfileForm.tag_field("學科優勢能力", InitialIGPProfileForm.ACADEMIC)
+    cognitive_needs = InitialIGPProfileForm.tag_field("認知弱勢特質", InitialIGPProfileForm.COGNITIVE)
+    emotional_needs = InitialIGPProfileForm.tag_field("情意弱勢特質", InitialIGPProfileForm.EMOTIONAL)
+    academic_needs = InitialIGPProfileForm.tag_field("學科弱勢能力", InitialIGPProfileForm.ACADEMIC)
+
+    class Meta:
+        model = IGPPlan
+        fields = "__all__"
+
+
+class CoursePlanForm(forms.ModelForm):
+    DOMAINS = ("國語文", "英語文", "第二外國語文", "數學領域", "社會領域", "自然科學領域", "藝術領域", "綜合活動領域", "科技領域", "健康與體育領域")
+    SPECIAL = ("創造能力", "領導才能", "獨立研究", "情意發展", "專長領域", "生活管理", "社會技巧", "學習策略", "職業教育", "定向行動", "點字", "溝通訓練", "功能性動作訓練", "輔助科技應用")
+    COGNITIVE = ("內容調整：加深加廣", "內容調整：獨立研究", "內容調整：濃縮加速／縮短修業", "歷程調整：思考訓練", "歷程調整：研究方法訓練", "歷程調整：學習策略訓練", "結果調整：作業調整", "結果調整：評量調整", "結果調整：成果分享", "環境調整：自學空間", "環境調整：校外學習", "環境調整：校外交流")
+    AFFECTIVE = ("輔導重點：情意技能", "輔導重點：親子互動", "輔導重點：同儂互動", "輔導重點：情緒調適", "輔導重點：壓力調適", "輔導重點：自我認識", "輔導重點：學習動機", "輔導重點：生涯規劃", "輔導方式：融入學科", "輔導方式：團體輔導", "輔導方式：小組輔導", "輔導方式：個別輔導", "輔導方式：親職教育")
+    SKILLS = ("培訓重點：生活技能", "培訓重點：學習技能", "培訓重點：時間管理", "培訓重點：自我管理", "培訓方式：融入學科", "培訓方式：團體訓練", "培訓方式：小組訓練", "培訓方式：個別訓練")
+
+    learning_domains = InitialIGPProfileForm.tag_field("領域學習課程", DOMAINS)
+    special_needs_courses = InitialIGPProfileForm.tag_field("特殊需求課程", SPECIAL)
+    cognitive_adjustments = InitialIGPProfileForm.tag_field("認知教學方面", COGNITIVE)
+    affective_support = InitialIGPProfileForm.tag_field("情意輔導方面", AFFECTIVE)
+    skill_training = InitialIGPProfileForm.tag_field("技能培訓方面", SKILLS)
+
+    class Meta:
+        model = CoursePlan
+        fields = "__all__"
+
+
+class CollapsibleCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
+    def render(self, name, value, attrs=None, renderer=None):
+        checkboxes = super().render(name, value, attrs, renderer)
+        return format_html("<details><summary>選擇評量方式</summary>{}</details>", mark_safe(checkboxes))
+
+
+class LearningPerformanceForm(forms.ModelForm):
+    METHODS = ("紙筆評量", "口語評量", "實作評量", "作業評量", "觀察評量", "檔案評量", "同儂評量", "學生自評")
+    assessment_methods = TagMultipleChoiceField(
+        label="評量方式", required=False,
+        choices=[(choice, choice) for choice in METHODS],
+        widget=CollapsibleCheckboxSelectMultiple(attrs={"class": "tag-checkboxes"}),
+    )
+
+    class Meta:
+        model = LearningPerformance
+        fields = "__all__"

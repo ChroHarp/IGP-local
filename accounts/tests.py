@@ -581,3 +581,44 @@ class TeacherAssignmentBoardTests(TestCase):
 
 
 
+
+
+class LearningOutcomeRatingWorkflowTests(TestCase):
+    def setUp(self):
+        from .models import CoursePlan, IGPPlan, LearningPerformance, SemesterPlan
+
+        self.account = get_user_model().objects.create_user(
+            username="rating-teacher", email="rating@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.COURSE_TEACHER, is_approved=True, is_staff=True,
+        )
+        self.teacher = Teacher.objects.create(full_name="Rating Teacher", account=self.account)
+        self.students = [Student.objects.create(full_name=name) for name in ("Student A", "Student B")]
+        self.performances = []
+        for student in self.students:
+            StudentStaffAssignment.objects.create(
+                student=student, staff=self.teacher, role=StudentStaffAssignment.Role.COURSE_TEACHER,
+            )
+            plan = IGPPlan.objects.create(student=student, academic_year="115", overall_goal="goal")
+            semester = SemesterPlan.objects.create(igp_plan=plan, semester=1, course_needs_assessment="needs", goals="semester goal")
+            course = CoursePlan.objects.create(semester_plan=semester, course_name="Mathematics", teacher=self.teacher, goals="course goal")
+            self.performances.append(LearningPerformance.objects.create(course_plan=course, description=f"Performance {student.pk}"))
+        self.source = self.performances[0].course_plan
+
+    def test_course_teacher_rates_all_assigned_students_by_subject(self):
+        from .models import LearningOutcomeRating
+
+        self.client.force_login(self.account)
+        dashboard = self.client.get(reverse("admin:accounts_learningoutcomerating_changelist"))
+        subject_url = reverse("admin:accounts_learningoutcomerating_subject", args=[self.source.pk])
+        subject = self.client.get(subject_url)
+        response = self.client.post(subject_url, {
+            f"rating-{self.performances[0].pk}": "3",
+            f"rating-{self.performances[1].pk}": "4",
+        })
+
+        self.assertContains(dashboard, "Mathematics")
+        self.assertContains(subject, "Student A")
+        self.assertContains(subject, "Student B")
+        self.assertRedirects(response, subject_url)
+        self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[0]).rating, 3)
+        self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[1]).rating, 4)
