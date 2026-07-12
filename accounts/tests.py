@@ -622,3 +622,49 @@ class LearningOutcomeRatingWorkflowTests(TestCase):
         self.assertRedirects(response, subject_url)
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[0]).rating, 3)
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[1]).rating, 4)
+
+
+class PlanCopyActionTests(TestCase):
+    def setUp(self):
+        from .models import CoursePlan, IGPPlan, LearningPerformance, SemesterPlan
+
+        self.lead = get_user_model().objects.create_user(
+            username="plan-lead", email="plan-lead@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.SPECIAL_EDUCATION_LEAD, is_approved=True, is_staff=True,
+        )
+        self.source_student = Student.objects.create(full_name="Source")
+        self.target_student = Student.objects.create(full_name="Target")
+        self.annual = IGPPlan.objects.create(student=self.source_student, academic_year="115", overall_goal="annual")
+        self.semester = SemesterPlan.objects.create(
+            igp_plan=self.annual, semester=1, learning_domains="mathematics", special_needs_courses="creativity", goals="semester",
+        )
+        self.course = CoursePlan.objects.create(semester_plan=self.semester, course_name="Mathematics", goals="course")
+        self.performance = LearningPerformance.objects.create(course_plan=self.course, description="performance", assessment_methods="written")
+
+    def test_annual_and_course_copy_actions_open_their_target_forms(self):
+        self.client.force_login(self.lead)
+        annual_response = self.client.post(
+            reverse("admin:accounts_igpplan_changelist"),
+            {"action": "copy_selected_annual_plan", "_selected_action": self.annual.pk},
+        )
+        course_response = self.client.post(
+            reverse("admin:accounts_courseplan_changelist"),
+            {"action": "copy_selected_course_plan", "_selected_action": self.course.pk},
+        )
+
+        self.assertRedirects(annual_response, reverse("admin:accounts_igpplan_copy", args=[self.annual.pk]))
+        self.assertRedirects(course_response, reverse("admin:accounts_courseplan_copy", args=[self.course.pk]))
+
+    def test_course_copy_preserves_performances_and_semester_assessment(self):
+        from .models import CoursePlan
+
+        self.client.force_login(self.lead)
+        response = self.client.post(
+            reverse("admin:accounts_courseplan_copy", args=[self.course.pk]),
+            {"students": [self.target_student.pk], "academic_year": "116", "semester": 1},
+        )
+
+        target = CoursePlan.objects.get(semester_plan__igp_plan__student=self.target_student, course_name="Mathematics")
+        self.assertRedirects(response, reverse("admin:accounts_courseplan_changelist"))
+        self.assertEqual(target.semester_plan.learning_domains, "mathematics")
+        self.assertEqual(target.learning_performances.get().description, "performance")

@@ -1,0 +1,6 @@
+﻿.parent-child-choices { display: grid; gap: .65rem; max-width: 70rem; }
+.parent-child-group { margin: 0; padding: .55rem .75rem; border: 1px solid var(--border-color, #ccc); }
+.parent-choice { display: block; font-weight: 700; margin-bottom: .35rem; }
+.child-choices .tag-checkboxes { display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
+.child-choices .tag-checkboxes > div { display: contents; }
+.child-choices label { display: inline-flex; align-items: center; gap: .25rem; float: none; width: auto; }

@@ -10,7 +10,7 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
+from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CopyCoursePlanForm, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
 from .importers import import_basic_students
 from .models import Assessment, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 from .policies import (
@@ -251,6 +251,14 @@ class IGPPlanAdmin(StudentDataAdmin):
     list_display = ("student", "academic_year", "overall_goal")
     list_filter = ("academic_year",)
     search_fields = ("student__full_name", "academic_year", "overall_goal")
+    actions = ("copy_selected_annual_plan",)
+
+    @admin.action(description="Copy selected annual plan to other students")
+    def copy_selected_annual_plan(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one source annual plan.", messages.ERROR)
+            return None
+        return HttpResponseRedirect(reverse("admin:accounts_igpplan_copy", args=[queryset.get().pk]))
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)
@@ -260,7 +268,28 @@ class IGPPlanAdmin(StudentDataAdmin):
         return queryset
 
     def get_urls(self):
-        return [path("bulk/", self.admin_site.admin_view(self.bulk_view), name="accounts_igpplan_bulk")] + super().get_urls()
+        return [
+            path("bulk/", self.admin_site.admin_view(self.bulk_view), name="accounts_igpplan_bulk"),
+            path("<int:plan_id>/copy/", self.admin_site.admin_view(self.copy_view), name="accounts_igpplan_copy"),
+        ] + super().get_urls()
+
+    def copy_view(self, request, plan_id):
+        if not can_manage_school_settings(request.user):
+            raise PermissionDenied
+        source = get_object_or_404(IGPPlan, pk=plan_id)
+        form = CopySemesterPlanForm(
+            request.POST or None,
+            students=Student.objects.filter(is_active=True).exclude(pk=source.student_id),
+            academic_year=current_academic_year(),
+        )
+        if request.method == "POST" and form.is_valid():
+            fields = ("overall_goal", "notes", "cognitive_strengths", "emotional_strengths", "academic_strengths", "cognitive_needs", "emotional_needs", "academic_needs", "qualitative_analysis", "learning_strategies")
+            defaults = {field: getattr(source, field) for field in fields}
+            for student in form.cleaned_data["students"]:
+                IGPPlan.objects.get_or_create(student=student, academic_year=form.cleaned_data["academic_year"], defaults=defaults)
+            self.message_user(request, "Annual plan copied; existing plans were not overwritten.", messages.SUCCESS)
+            return HttpResponseRedirect(reverse("admin:accounts_igpplan_changelist"))
+        return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {**self.admin_site.each_context(request), "title": f"Copy annual plan: {source}", "form": form, "opts": self.model._meta})
 
     def bulk_view(self, request):
         if not can_manage_school_settings(request.user):
@@ -290,7 +319,13 @@ class CoursePlanInline(StudentRelatedInlinePermissions, admin.TabularInline):
 
 @admin.register(SemesterPlan)
 class SemesterPlanAdmin(StudentDataAdmin):
+    form = SemesterPlanForm
     inlines = (CoursePlanInline,)
+    fieldsets = (
+        ("課程需求評估", {"fields": ("learning_domains", "special_needs_courses")}),
+        ("學期目標與策略", {"fields": ("igp_plan", "semester", "goals", "strategies")}),
+        ("舊版課程需求評估", {"fields": ("course_needs_assessment",), "classes": ("collapse",)}),
+    )
     change_list_template = "admin/accounts/semesterplan/change_list.html"
     student_lookup = "igp_plan__student"
     parent_field = "igp_plan"
@@ -368,7 +403,7 @@ class SemesterPlanAdmin(StudentDataAdmin):
                 target_semester, _ = SemesterPlan.objects.get_or_create(
                     igp_plan=target_igp,
                     semester=source.semester,
-                    defaults={"course_needs_assessment": source.course_needs_assessment, "goals": source.goals, "strategies": source.strategies},
+                    defaults={"course_needs_assessment": source.course_needs_assessment, "learning_domains": source.learning_domains, "special_needs_courses": source.special_needs_courses, "goals": source.goals, "strategies": source.strategies},
                 )
                 for course in source.course_plans.all():
                     CoursePlan.objects.get_or_create(
@@ -394,22 +429,71 @@ class SemesterPlanAdmin(StudentDataAdmin):
         })
 
 
-class LearningPerformanceInline(admin.StackedInline):
+
+
+class LearningPerformanceInline(admin.TabularInline):
     model = LearningPerformance
     form = LearningPerformanceForm
-    extra = 1
+    extra = 0
     fieldsets = ((None, {"fields": ("sort_order", "description", "adjustment", "assessment_methods")}),)
 
 
 @admin.register(CoursePlan)
 class CoursePlanAdmin(StudentDataAdmin):
     form = CoursePlanForm
+
+    class Media:
+        css = {"all": ("admin/accounts/parent_child_checkboxes.css",)}
+        js = ("admin/accounts/parent_child_checkboxes.js",)
     inlines = (LearningPerformanceInline,)
     fieldsets = (
         ("課程基本資料", {"fields": ("semester_plan", "course_name", "teacher", "goals")}),
-        ("教育需求與輔導建議事項", {"fields": ("learning_domains", "special_needs_courses", "cognitive_adjustments", "affective_support", "skill_training")}),
-        ("其他學習活動／調整", {"fields": ("activities",), "classes": ("collapse",)}),
+        ("教育需求與輔導建議事項", {"fields": ("cognitive_adjustments", "affective_support", "skill_training")}),
     )
+    actions = ("copy_selected_course_plan",)
+
+    @admin.action(description="Copy selected course plan to other students")
+    def copy_selected_course_plan(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one source course plan.", messages.ERROR)
+            return None
+        return HttpResponseRedirect(reverse("admin:accounts_courseplan_copy", args=[queryset.get().pk]))
+
+    def get_urls(self):
+        return [path("<int:plan_id>/copy/", self.admin_site.admin_view(self.copy_view), name="accounts_courseplan_copy")] + super().get_urls()
+
+    def copy_view(self, request, plan_id):
+        if not can_manage_school_settings(request.user):
+            raise PermissionDenied
+        source = get_object_or_404(CoursePlan.objects.select_related("semester_plan__igp_plan"), pk=plan_id)
+        form = CopyCoursePlanForm(
+            request.POST or None,
+            students=Student.objects.filter(is_active=True).exclude(pk=source.semester_plan.igp_plan.student_id),
+            academic_year=current_academic_year(),
+            semester=source.semester_plan.semester,
+        )
+        if request.method == "POST" and form.is_valid():
+            annual_fields = ("overall_goal", "notes", "cognitive_strengths", "emotional_strengths", "academic_strengths", "cognitive_needs", "emotional_needs", "academic_needs", "qualitative_analysis", "learning_strategies")
+            annual_defaults = {field: getattr(source.semester_plan.igp_plan, field) for field in annual_fields}
+            semester_defaults = {
+                "course_needs_assessment": source.semester_plan.course_needs_assessment,
+                "learning_domains": source.semester_plan.learning_domains,
+                "special_needs_courses": source.semester_plan.special_needs_courses,
+                "goals": source.semester_plan.goals, "strategies": source.semester_plan.strategies,
+            }
+            course_fields = ("teacher", "goals", "activities", "learning_domains", "special_needs_courses", "cognitive_adjustments", "affective_support", "skill_training")
+            course_defaults = {field: getattr(source, field) for field in course_fields}
+            for student in form.cleaned_data["students"]:
+                annual, _ = IGPPlan.objects.get_or_create(student=student, academic_year=form.cleaned_data["academic_year"], defaults=annual_defaults)
+                semester, _ = SemesterPlan.objects.get_or_create(igp_plan=annual, semester=form.cleaned_data["semester"], defaults=semester_defaults)
+                course, _ = CoursePlan.objects.get_or_create(semester_plan=semester, course_name=source.course_name, defaults=course_defaults)
+                for performance in source.learning_performances.all():
+                    LearningPerformance.objects.get_or_create(course_plan=course, description=performance.description, defaults={"adjustment": performance.adjustment, "assessment_methods": performance.assessment_methods, "sort_order": performance.sort_order})
+            self.message_user(request, "Course plan copied; existing plans were not overwritten.", messages.SUCCESS)
+            return HttpResponseRedirect(reverse("admin:accounts_courseplan_changelist"))
+        return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {**self.admin_site.each_context(request), "title": f"Copy course plan: {source}", "form": form, "opts": self.model._meta})
+
+
     student_lookup = "semester_plan__igp_plan__student"
     parent_field = "semester_plan"
     parent_student_lookup = "igp_plan__student"

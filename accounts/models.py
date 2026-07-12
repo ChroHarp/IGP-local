@@ -349,6 +349,8 @@ class SemesterPlan(models.Model):
     igp_plan = models.ForeignKey(IGPPlan, verbose_name="IGP 年度計畫", on_delete=models.CASCADE, related_name="semester_plans")
     semester = models.PositiveSmallIntegerField("學期", choices=Semester.choices)
     course_needs_assessment = models.TextField("課程需求評估", blank=True)
+    learning_domains = models.TextField("領域學習課程", blank=True)
+    special_needs_courses = models.TextField("特殊需求課程", blank=True)
     goals = models.TextField("學期目標")
     strategies = models.TextField("執行策略", blank=True)
 

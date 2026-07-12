@@ -179,6 +179,36 @@ class IGPPlanForm(forms.ModelForm):
         fields = "__all__"
 
 
+class ParentChildCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
+    def __init__(self, groups, *args, **kwargs):
+        self.groups = groups
+        choices = [choice for _, children in groups for choice in children]
+        super().__init__(choices=choices, *args, **kwargs)
+
+    def render(self, name, value, attrs=None, renderer=None):
+        selected = set(value or [])
+        base_id = (attrs or {}).get("id", f"id_{name}")
+        groups = []
+        for index, (parent, children) in enumerate(self.groups):
+            child_widget = forms.CheckboxSelectMultiple(choices=children)
+            child_html = child_widget.render(name, selected, {"id": f"{base_id}_{index}"}, renderer)
+            groups.append(format_html(
+                '<fieldset class="parent-child-group"><label class="parent-choice"><input type="checkbox" data-parent-checkbox> {}</label><div class="child-choices">{}</div></fieldset>',
+                parent, mark_safe(child_html),
+            ))
+        return mark_safe('<div class="parent-child-choices">' + ''.join(groups) + '</div>')
+
+
+class ParentChildChoiceField(TagMultipleChoiceField):
+    def __init__(self, label, groups):
+        super().__init__(
+            label=label,
+            required=False,
+            choices=[choice for _, children in groups for choice in children],
+            widget=ParentChildCheckboxSelectMultiple(groups, attrs={"class": "tag-checkboxes"}),
+        )
+
+
 class CoursePlanForm(forms.ModelForm):
     DOMAINS = ("國語文", "英語文", "第二外國語文", "數學領域", "社會領域", "自然科學領域", "藝術領域", "綜合活動領域", "科技領域", "健康與體育領域")
     SPECIAL = ("創造能力", "領導才能", "獨立研究", "情意發展", "專長領域", "生活管理", "社會技巧", "學習策略", "職業教育", "定向行動", "點字", "溝通訓練", "功能性動作訓練", "輔助科技應用")
@@ -188,9 +218,20 @@ class CoursePlanForm(forms.ModelForm):
 
     learning_domains = InitialIGPProfileForm.tag_field("領域學習課程", DOMAINS)
     special_needs_courses = InitialIGPProfileForm.tag_field("特殊需求課程", SPECIAL)
-    cognitive_adjustments = InitialIGPProfileForm.tag_field("認知教學方面", COGNITIVE)
-    affective_support = InitialIGPProfileForm.tag_field("情意輔導方面", AFFECTIVE)
-    skill_training = InitialIGPProfileForm.tag_field("技能培訓方面", SKILLS)
+    cognitive_adjustments = ParentChildChoiceField("認知教學方面", (
+        ("內容調整", tuple(item.split("：", 1)[1] for item in COGNITIVE if item.startswith("內容調整"))),
+        ("歷程調整", tuple(item.split("：", 1)[1] for item in COGNITIVE if item.startswith("歷程調整"))),
+        ("結果調整", tuple(item.split("：", 1)[1] for item in COGNITIVE if item.startswith("結果調整"))),
+        ("環境調整", tuple(item.split("：", 1)[1] for item in COGNITIVE if item.startswith("環境調整"))),
+    ))
+    affective_support = ParentChildChoiceField("情意輔導方面", (
+        ("輔導重點", tuple(item.split("：", 1)[1] for item in AFFECTIVE if item.startswith("輔導重點"))),
+        ("輔導方式", tuple(item.split("：", 1)[1] for item in AFFECTIVE if item.startswith("輔導方式"))),
+    ))
+    skill_training = ParentChildChoiceField("技能培訓方面", (
+        ("培訓重點", tuple(item.split("：", 1)[1] for item in SKILLS if item.startswith("培訓重點"))),
+        ("培訓方式", tuple(item.split("：", 1)[1] for item in SKILLS if item.startswith("培訓方式"))),
+    ))
 
     class Meta:
         model = CoursePlan
@@ -214,3 +255,20 @@ class LearningPerformanceForm(forms.ModelForm):
     class Meta:
         model = LearningPerformance
         fields = "__all__"
+
+
+class SemesterPlanForm(forms.ModelForm):
+    learning_domains = InitialIGPProfileForm.tag_field("領域學習課程", CoursePlanForm.DOMAINS)
+    special_needs_courses = InitialIGPProfileForm.tag_field("特殊需求課程", CoursePlanForm.SPECIAL)
+
+    class Meta:
+        model = SemesterPlan
+        fields = "__all__"
+
+
+class CopyCoursePlanForm(CopySemesterPlanForm):
+    semester = forms.TypedChoiceField(label="Target semester", choices=SemesterPlan.Semester.choices, coerce=int)
+
+    def __init__(self, *args, semester=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["semester"].initial = semester
