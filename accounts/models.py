@@ -387,10 +387,16 @@ class CoursePlan(models.Model):
 
 class LearningPerformance(models.Model):
     course_plan = models.ForeignKey(CoursePlan, verbose_name="課程計畫", on_delete=models.CASCADE, related_name="learning_performances")
-    description = models.TextField("學習表現")
+    description = models.TextField("學習表現", blank=True)
     adjustment = models.TextField("學習表現調整", blank=True)
     assessment_methods = models.TextField("評量方式", blank=True)
-    sort_order = models.PositiveSmallIntegerField("項次", default=1)
+    sort_order = models.PositiveSmallIntegerField("項次", default=0)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and not self.sort_order:
+            last = type(self).objects.filter(course_plan_id=self.course_plan_id).aggregate(value=models.Max("sort_order"))["value"] or 0
+            self.sort_order = last + 1
+        super().save(*args, **kwargs)
 
     class Meta:
         verbose_name = "學習表現條目"

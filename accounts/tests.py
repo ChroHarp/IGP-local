@@ -619,6 +619,8 @@ class LearningOutcomeRatingWorkflowTests(TestCase):
         self.assertContains(dashboard, "Mathematics")
         self.assertContains(subject, "Student A")
         self.assertContains(subject, "Student B")
+        self.assertContains(subject, "<h2>Student A</h2>", html=True)
+        self.assertContains(subject, "<h2>Student B</h2>", html=True)
         self.assertRedirects(response, subject_url)
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[0]).rating, 3)
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[1]).rating, 4)
@@ -654,6 +656,57 @@ class PlanCopyActionTests(TestCase):
 
         self.assertRedirects(annual_response, reverse("admin:accounts_igpplan_copy", args=[self.annual.pk]))
         self.assertRedirects(course_response, reverse("admin:accounts_courseplan_copy", args=[self.course.pk]))
+
+    def test_course_plan_change_form_renders(self):
+        self.client.force_login(self.lead)
+
+        response = self.client.get(reverse("admin:accounts_courseplan_change", args=[self.course.pk]))
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_admin_course_plan_needs_are_saved_and_restored(self):
+        self.client.force_login(self.lead)
+        prefix = "learning_performances"
+        response = self.client.post(reverse("admin:accounts_courseplan_change", args=[self.course.pk]), {
+            "semester_plan": self.semester.pk, "course_name": self.course.course_name, "teacher": "", "goals": self.course.goals,
+            "cognitive_adjustments": ["加深加廣"], "affective_support": ["情意技能"], "skill_training": ["生活技能"],
+            f"{prefix}-TOTAL_FORMS": 1, f"{prefix}-INITIAL_FORMS": 1, f"{prefix}-MIN_NUM_FORMS": 0, f"{prefix}-MAX_NUM_FORMS": 1000,
+            f"{prefix}-0-id": self.performance.pk, f"{prefix}-0-course_plan": self.course.pk,
+            f"{prefix}-0-description": self.performance.description, f"{prefix}-0-adjustment": self.performance.adjustment, f"{prefix}-0-assessment_methods": [],
+            "_save": "Save",
+        })
+
+        self.assertEqual(response.status_code, 302)
+        self.course.refresh_from_db()
+        self.assertEqual(self.course.cognitive_adjustments, "加深加廣")
+        self.assertEqual(self.course.affective_support, "情意技能")
+        self.assertEqual(self.course.skill_training, "生活技能")
+
+    def test_course_plan_needs_are_saved_and_restored(self):
+        from .forms import CoursePlanForm
+
+        form = CoursePlanForm({
+            "semester_plan": self.semester.pk, "course_name": "Science", "goals": "goal",
+            "cognitive_adjustments": ["加深加廣"],
+            "affective_support": ["情意技能"], "skill_training": ["生活技能"],
+        })
+
+        self.assertTrue(form.is_valid(), form.errors)
+        course = form.save()
+        self.assertEqual(course.cognitive_adjustments, "加深加廣")
+        self.assertEqual(course.affective_support, "情意技能")
+        self.assertEqual(course.skill_training, "生活技能")
+        restored = CoursePlanForm(instance=course)["cognitive_adjustments"]
+        self.assertEqual(restored.value(), ["加深加廣"])
+        self.assertIn("checked", str(restored))
+
+    def test_learning_performance_uses_automatic_sequence(self):
+        from .models import LearningPerformance
+
+        first = LearningPerformance.objects.create(course_plan=self.course, adjustment="first")
+        second = LearningPerformance.objects.create(course_plan=self.course, adjustment="second")
+
+        self.assertEqual((first.sort_order, second.sort_order), (2, 3))
 
     def test_course_copy_preserves_performances_and_semester_assessment(self):
         from .models import CoursePlan

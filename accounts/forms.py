@@ -191,7 +191,7 @@ class ParentChildCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
         groups = []
         for index, (parent, children) in enumerate(self.groups):
             child_widget = forms.CheckboxSelectMultiple(choices=children)
-            child_html = child_widget.render(name, selected, {"id": f"{base_id}_{index}"}, renderer)
+            child_html = child_widget.render(name, list(selected), {"id": f"{base_id}_{index}"}, renderer)
             groups.append(format_html(
                 '<fieldset class="parent-child-group"><label class="parent-choice"><input type="checkbox" data-parent-checkbox> {}</label><div class="child-choices">{}</div></fieldset>',
                 parent, mark_safe(child_html),
@@ -201,6 +201,7 @@ class ParentChildCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
 
 class ParentChildChoiceField(TagMultipleChoiceField):
     def __init__(self, label, groups):
+        groups = tuple((parent, tuple((choice, choice) for choice in children)) for parent, children in groups)
         super().__init__(
             label=label,
             required=False,

@@ -435,7 +435,7 @@ class LearningPerformanceInline(admin.TabularInline):
     model = LearningPerformance
     form = LearningPerformanceForm
     extra = 0
-    fieldsets = ((None, {"fields": ("sort_order", "description", "adjustment", "assessment_methods")}),)
+    fields = ("description", "adjustment", "assessment_methods")
 
 
 @admin.register(CoursePlan)
@@ -564,9 +564,13 @@ class LearningOutcomeRatingAdmin(admin.ModelAdmin):
                 "performance": performance,
                 "current_rating": current_rating,
             })
+        student_groups = {}
+        for row in rows:
+            student = row["student"]
+            student_groups.setdefault(student.pk, {"student": student, "rows": []})["rows"].append(row)
         return TemplateResponse(request, "admin/accounts/learningoutcomerating/subject_form.html", {
             **self.admin_site.each_context(request), "title": f"{source.course_name}－學習成果評分",
-            "source": source, "rows": rows, "rating_choices": LearningOutcomeRating.Rating.choices, "opts": self.model._meta,
+            "source": source, "student_groups": student_groups.values(), "rating_choices": LearningOutcomeRating.Rating.choices, "opts": self.model._meta,
         })
 
     def get_queryset(self, request):

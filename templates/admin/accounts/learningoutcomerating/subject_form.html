@@ -2,11 +2,13 @@
 {% block extrastyle %}
 {{ block.super }}
 <style>
+.student-section { margin: 1.5rem 0; }
+.student-section h2 { padding: .65rem .85rem; margin: 0; background: #e8eef2; color: #1f2933; border-left: .3rem solid #417690; }
 .outcome-table { width: 100%; border-collapse: collapse; }
 .outcome-table th, .outcome-table td { padding: .65rem; border-bottom: 1px solid var(--border-color); vertical-align: top; }
 .outcome-table select { min-width: 9rem; }
 .outcome-table .performance { max-width: 60ch; white-space: normal; }
-@media (max-width: 700px) { .outcome-table th:nth-child(3), .outcome-table td:nth-child(3) { display: none; } }
+@media (max-width: 700px) { .outcome-table th:nth-child(2), .outcome-table td:nth-child(2) { display: none; } }
 </style>
 {% endblock %}
 {% block content %}
@@ -14,25 +16,29 @@
   <p>{{ source.semester_plan.igp_plan.academic_year }}｜{{ source.semester_plan.get_semester_display }}｜{{ source.teacher|default:"尚未指定授課教師" }}</p>
   <form method="post">
     {% csrf_token %}
-    <table class="outcome-table">
-      <thead><tr><th>學生</th><th>學習表現</th><th>學習表現調整</th><th>教師評分</th></tr></thead>
-      <tbody>
-      {% for row in rows %}
-        <tr>
-          <td>{{ row.student }}</td>
-          <td class="performance">{{ row.performance.description }}</td>
-          <td class="performance">{{ row.performance.adjustment|default:"－" }}</td>
-          <td><select name="rating-{{ row.performance.pk }}" aria-label="{{ row.student }}：{{ row.performance.description }}">
-            <option value="">尚未評分</option>
-            {% for value, label in rating_choices %}<option value="{{ value }}"{% if value == row.current_rating %} selected{% endif %}>{{ label }}</option>{% endfor %}
-          </select></td>
-        </tr>
-      {% empty %}
-        <tr><td colspan="4">這門課尚未建立學習表現條目。</td></tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% if rows %}<div class="submit-row"><input type="submit" class="default" value="儲存全部評分"></div>{% endif %}
+    {% for group in student_groups %}
+      <section class="student-section">
+        <h2>{{ group.student }}</h2>
+        <table class="outcome-table">
+          <thead><tr><th>學習表現</th><th>學習表現調整</th><th>教師評分</th></tr></thead>
+          <tbody>
+          {% for row in group.rows %}
+            <tr>
+              <td class="performance">{{ row.performance.description }}</td>
+              <td class="performance">{{ row.performance.adjustment|default:"－" }}</td>
+              <td><select name="rating-{{ row.performance.pk }}" aria-label="{{ row.student }}：{{ row.performance.description }}">
+                <option value="">尚未評分</option>
+                {% for value, label in rating_choices %}<option value="{{ value }}"{% if value == row.current_rating %} selected{% endif %}>{{ label }}</option>{% endfor %}
+              </select></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% empty %}
+      <p>這門課尚未建立學習表現條目。</p>
+    {% endfor %}
+    {% if student_groups %}<div class="submit-row"><input type="submit" class="default" value="儲存全部評分"></div>{% endif %}
   </form>
 </div>
 {% endblock %}
