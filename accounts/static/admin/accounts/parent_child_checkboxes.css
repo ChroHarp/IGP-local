@@ -4,3 +4,21 @@
 .child-choices .tag-checkboxes { display: flex; flex-wrap: wrap; gap: .35rem .75rem; }
 .child-choices .tag-checkboxes > div { display: contents; }
 .child-choices label { display: inline-flex; align-items: center; gap: .25rem; float: none; width: auto; }
+
+.field-learning_domains .tag-checkboxes,
+.field-special_needs_courses .tag-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .75rem;
+  max-width: 70rem;
+}
+.field-learning_domains .tag-checkboxes > div,
+.field-special_needs_courses .tag-checkboxes > div { display: contents; }
+.field-learning_domains .tag-checkboxes label,
+.field-special_needs_courses .tag-checkboxes label {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  float: none;
+  width: auto;
+}
