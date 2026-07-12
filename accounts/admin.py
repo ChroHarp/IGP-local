@@ -5,19 +5,22 @@ from django.db import transaction
 from django.db.models import Count
 from django.http import Http404, HttpResponseRedirect
 from django.template.response import TemplateResponse
+from django.shortcuts import get_object_or_404
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .forms import InitialIGPProfileForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
+from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, InitialIGPProfileForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
 from .importers import import_basic_students
-from .models import AwardRecord, FamilyMember, Guardian, InitialIGPProfile, ProgramDocument, SchoolSetting, Student, StudentStaffAssignment, Teacher, User
+from .models import Assessment, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcome, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 from .policies import (
     can_add_student,
     can_edit_student,
     can_manage_accounts,
     can_manage_program_documents,
     can_manage_school_settings,
+    can_manage_learning_outcomes,
+    students_for_learning_outcomes,
     can_view_program_documents,
     can_view_student,
     visible_students_for,
@@ -28,14 +31,47 @@ admin.site.site_title = "IGP 本地管理"
 admin.site.index_title = "學校資料管理"
 
 
+def current_academic_year():
+    return SchoolSetting.objects.values_list("academic_year", flat=True).first() or ""
+
+
+_original_get_app_list = admin.site.get_app_list
+
+
+def get_grouped_app_list(request, app_label=None):
+    app_list = _original_get_app_list(request, app_label)
+    if app_label:
+        return app_list
+    accounts_app = next((app for app in app_list if app["app_label"] == "accounts"), None)
+    if not accounts_app:
+        return app_list
+    igp_models = {"igpplan", "semesterplan", "courseplan", "learningoutcome"}
+    models = [model for model in accounts_app["models"] if model["object_name"].lower() in igp_models]
+    if not models:
+        return app_list
+    accounts_app["models"] = [model for model in accounts_app["models"] if model not in models]
+    app_list.append({
+        "name": "IGP 計畫", "app_label": "igp", "app_url": reverse("admin:app_list", args=("accounts",)),
+        "has_module_perms": True, "models": models,
+    })
+    return app_list
+
+
+admin.site.get_app_list = get_grouped_app_list
+
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
     list_display = ("username", "email", "role", "is_approved", "is_active", "is_staff")
     list_filter = ("role", "is_approved", "is_active", "is_staff")
     search_fields = ("username", "email", "first_name", "last_name")
-    fieldsets = BaseUserAdmin.fieldsets + (("IGP 權限", {"fields": ("role", "is_approved")}),)
+    fieldsets = (
+        (None, {"fields": ("username", "password")}),
+        ("帳號資料", {"fields": ("first_name", "last_name", "email")}),
+        ("IGP 權限", {"fields": ("role", "is_approved", "is_active", "is_staff")}),
+        ("群組與權限", {"fields": ("groups", "user_permissions"), "classes": ("collapse",)}),
+    )
     add_fieldsets = BaseUserAdmin.add_fieldsets + (
-        ("帳號資料", {"fields": ("email", "first_name", "last_name", "role", "is_approved")}),
+        ("帳號資料", {"fields": ("email", "first_name", "last_name", "role", "is_approved", "is_active", "is_staff")}),
     )
 
     def has_module_permission(self, request):
@@ -97,12 +133,27 @@ class AwardRecordInline(StudentRelatedInlinePermissions, admin.TabularInline):
     extra = 0
 
 
+class AssessmentInline(StudentRelatedInlinePermissions, admin.TabularInline):
+    model = Assessment
+    extra = 0
+
+
+class InterestInline(StudentRelatedInlinePermissions, admin.TabularInline):
+    model = Interest
+    extra = 0
+
+
+class IGPPlanInline(StudentRelatedInlinePermissions, admin.TabularInline):
+    model = IGPPlan
+    extra = 0
+
+
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
     list_display = ("full_name", "grade", "class_name", "seat_number", "is_active")
     list_filter = ("is_active", "grade", "gender")
     search_fields = ("full_name", "student_number", "class_name")
-    inlines = (GuardianInline, FamilyMemberInline, InitialIGPProfileInline, AwardRecordInline)
+    inlines = (GuardianInline, FamilyMemberInline, InitialIGPProfileInline, AssessmentInline, InterestInline, AwardRecordInline, IGPPlanInline)
     change_list_template = "admin/accounts/student/change_list.html"
     change_form_template = "admin/accounts/student/change_form.html"
     fieldsets = (
@@ -143,6 +194,204 @@ class StudentAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return can_manage_school_settings(request.user)
+
+
+class StudentDataAdmin(admin.ModelAdmin):
+    student_lookup = "student"
+    parent_field = "student"
+    parent_student_lookup = "pk"
+
+    def student_for(self, obj):
+        for part in self.student_lookup.split("__"):
+            obj = getattr(obj, part)
+        return obj
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).filter(**{f"{self.student_lookup}__in": visible_students_for(request.user)})
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == self.parent_field:
+            kwargs["queryset"] = db_field.remote_field.model._default_manager.filter(
+                **{f"{self.parent_student_lookup}__in": visible_students_for(request.user)}
+            )
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def has_module_permission(self, request):
+        return can_view_student(request.user)
+
+    def has_view_permission(self, request, obj=None):
+        return can_view_student(request.user, self.student_for(obj)) if obj else can_view_student(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        return can_edit_student(request.user, self.student_for(obj)) if obj else can_view_student(request.user)
+
+    def has_add_permission(self, request):
+        return can_view_student(request.user)
+
+    def has_delete_permission(self, request, obj=None):
+        return can_edit_student(request.user, self.student_for(obj)) if obj else can_view_student(request.user)
+
+
+@admin.register(IGPPlan)
+class IGPPlanAdmin(StudentDataAdmin):
+    change_list_template = "admin/accounts/igpplan/change_list.html"
+    list_display = ("student", "academic_year", "overall_goal")
+    list_filter = ("academic_year",)
+    search_fields = ("student__full_name", "academic_year", "overall_goal")
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        current_year = current_academic_year()
+        if current_year and "academic_year" not in request.GET:
+            return queryset.filter(academic_year=current_year)
+        return queryset
+
+    def get_urls(self):
+        return [path("bulk/", self.admin_site.admin_view(self.bulk_view), name="accounts_igpplan_bulk")] + super().get_urls()
+
+    def bulk_view(self, request):
+        if not can_manage_school_settings(request.user):
+            raise PermissionDenied
+        form = BulkIGPPlanForm(request.POST or None, students=Student.objects.filter(is_active=True), initial={"academic_year": current_academic_year()})
+        if request.method == "POST" and form.is_valid():
+            for student in form.cleaned_data["students"]:
+                IGPPlan.objects.get_or_create(
+                    student=student,
+                    academic_year=form.cleaned_data["academic_year"],
+                    defaults={"overall_goal": form.cleaned_data["overall_goal"], "notes": form.cleaned_data["notes"]},
+                )
+            self.message_user(request, "???????????????????", messages.SUCCESS)
+            return HttpResponseRedirect(reverse("admin:accounts_igpplan_changelist"))
+        return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {
+            **self.admin_site.each_context(request), "title": "???? IGP ????", "form": form, "opts": self.model._meta,
+        })
+
+
+@admin.register(SemesterPlan)
+class SemesterPlanAdmin(StudentDataAdmin):
+    change_list_template = "admin/accounts/semesterplan/change_list.html"
+    student_lookup = "igp_plan__student"
+    parent_field = "igp_plan"
+    parent_student_lookup = "student"
+    list_display = ("igp_plan", "semester", "goals", "copy_link")
+    list_filter = ("semester", "igp_plan__academic_year")
+    search_fields = ("igp_plan__student__full_name", "goals")
+    actions = ("copy_selected_plan",)
+
+    @admin.action(description="Copy selected plan to other students")
+    def copy_selected_plan(self, request, queryset):
+        if queryset.count() != 1:
+            self.message_user(request, "Select exactly one source semester plan.", messages.ERROR)
+            return None
+        return HttpResponseRedirect(reverse("admin:accounts_semesterplan_copy", args=[queryset.get().pk]))
+
+    @admin.display(description="??")
+    def copy_link(self, obj):
+        return format_html('<a href="{}">???????</a>', reverse("admin:accounts_semesterplan_copy", args=[obj.pk]))
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        current_year = current_academic_year()
+        if current_year and "igp_plan__academic_year" not in request.GET:
+            return queryset.filter(igp_plan__academic_year=current_year)
+        return queryset
+
+    def get_urls(self):
+        return [
+            path("bulk/", self.admin_site.admin_view(self.bulk_view), name="accounts_semesterplan_bulk"),
+            path("<int:plan_id>/copy/", self.admin_site.admin_view(self.copy_view), name="accounts_semesterplan_copy"),
+        ] + super().get_urls()
+
+    def bulk_view(self, request):
+        if not can_manage_school_settings(request.user):
+            raise PermissionDenied
+        plans = IGPPlan.objects.filter(student__is_active=True, academic_year=current_academic_year())
+        form = BulkSemesterPlanForm(request.POST or None, plans=plans)
+        if request.method == "POST" and form.is_valid():
+            for plan in form.cleaned_data["plans"]:
+                SemesterPlan.objects.get_or_create(
+                    igp_plan=plan,
+                    semester=form.cleaned_data["semester"],
+                    defaults={"goals": form.cleaned_data["goals"], "strategies": form.cleaned_data["strategies"]},
+                )
+            self.message_user(request, "????????????????", messages.SUCCESS)
+            return HttpResponseRedirect(reverse("admin:accounts_semesterplan_changelist"))
+        return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {
+            **self.admin_site.each_context(request), "title": "????????", "form": form, "opts": self.model._meta,
+        })
+
+    def copy_view(self, request, plan_id):
+        if not can_manage_school_settings(request.user):
+            raise PermissionDenied
+        source = get_object_or_404(SemesterPlan.objects.select_related("igp_plan"), pk=plan_id)
+        students = Student.objects.filter(is_active=True).exclude(pk=source.igp_plan.student_id)
+        form = CopySemesterPlanForm(request.POST or None, students=students, academic_year=current_academic_year())
+        if request.method == "POST" and form.is_valid():
+            for student in form.cleaned_data["students"]:
+                target_igp, _ = IGPPlan.objects.get_or_create(
+                    student=student,
+                    academic_year=form.cleaned_data["academic_year"],
+                    defaults={"overall_goal": source.igp_plan.overall_goal, "notes": source.igp_plan.notes},
+                )
+                target_semester, _ = SemesterPlan.objects.get_or_create(
+                    igp_plan=target_igp,
+                    semester=source.semester,
+                    defaults={"goals": source.goals, "strategies": source.strategies},
+                )
+                for course in source.course_plans.all():
+                    CoursePlan.objects.get_or_create(
+                        semester_plan=target_semester,
+                        course_name=course.course_name,
+                        defaults={"goals": course.goals, "activities": course.activities},
+                    )
+            self.message_user(request, "????????????????????", messages.SUCCESS)
+            return HttpResponseRedirect(reverse("admin:accounts_semesterplan_changelist"))
+        return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {
+            **self.admin_site.each_context(request), "title": f"?????{source}", "form": form, "opts": self.model._meta,
+        })
+
+
+@admin.register(CoursePlan)
+class CoursePlanAdmin(StudentDataAdmin):
+    student_lookup = "semester_plan__igp_plan__student"
+    parent_field = "semester_plan"
+    parent_student_lookup = "igp_plan__student"
+    list_display = ("course_name", "semester_plan")
+    search_fields = ("course_name", "semester_plan__igp_plan__student__full_name")
+
+
+@admin.register(LearningOutcome)
+class LearningOutcomeAdmin(StudentDataAdmin):
+    student_lookup = "course_plan__semester_plan__igp_plan__student"
+    parent_field = "course_plan"
+    parent_student_lookup = "semester_plan__igp_plan__student"
+    list_display = ("course_plan", "recorded_on", "outcome")
+    list_filter = ("recorded_on",)
+    search_fields = ("course_plan__semester_plan__igp_plan__student__full_name", "outcome")
+
+    def get_queryset(self, request):
+        return super(StudentDataAdmin, self).get_queryset(request).filter(
+            course_plan__semester_plan__igp_plan__student__in=students_for_learning_outcomes(request.user)
+        )
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "course_plan":
+            kwargs["queryset"] = CoursePlan.objects.filter(
+                semester_plan__igp_plan__student__in=students_for_learning_outcomes(request.user)
+            )
+        return super(StudentDataAdmin, self).formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def has_module_permission(self, request):
+        return can_manage_learning_outcomes(request.user)
+
+    def has_view_permission(self, request, obj=None):
+        return can_manage_learning_outcomes(request.user, obj.course_plan.semester_plan.igp_plan.student) if obj else can_manage_learning_outcomes(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        return can_manage_learning_outcomes(request.user, obj.course_plan.semester_plan.igp_plan.student) if obj else can_manage_learning_outcomes(request.user)
+
+    def has_add_permission(self, request):
+        return can_manage_learning_outcomes(request.user)
 
 
 @admin.register(SchoolSetting)

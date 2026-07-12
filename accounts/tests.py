@@ -35,6 +35,20 @@ class ProjectSmokeTests(TestCase):
         self.assertEqual(user.email, "phase-one@example.edu.tw")
 
 
+class AccountLoginTests(TestCase):
+    def test_approved_local_user_can_open_login_and_log_in(self):
+        user = get_user_model().objects.create_user(
+            username="joyce", email="joyce@example.edu.tw", password="safe-test-password",
+            is_approved=True, is_active=True,
+        )
+
+        self.assertEqual(self.client.get(reverse("account_login")).status_code, 200)
+        response = self.client.post(reverse("account_login"), {"login": user.username, "password": "safe-test-password"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.post(reverse("account_logout")).status_code, 302)
+
+
 class PhaseOneModelTests(TestCase):
     def setUp(self):
         self.student = Student.objects.create(full_name="測試學生")
@@ -76,6 +90,27 @@ class PhaseOneModelTests(TestCase):
         with self.assertRaises(ValidationError):
             assignment.full_clean()
 
+    def test_only_one_current_case_manager_is_allowed(self):
+        other_account = get_user_model().objects.create_user(
+            username="other-case-manager",
+            email="other-case-manager@example.edu.tw",
+            password="safe-test-password",
+        )
+        other_teacher = Teacher.objects.create(full_name="other", account=other_account)
+        StudentStaffAssignment.objects.create(
+            student=self.student,
+            staff=self.teacher_record,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        duplicate = StudentStaffAssignment(
+            student=self.student,
+            staff=other_teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
     def test_google_policy_requires_an_approved_active_local_user(self):
         self.assertEqual(
             approved_google_user_for_email("TEACHER@example.edu.tw"),
@@ -85,6 +120,17 @@ class PhaseOneModelTests(TestCase):
         self.teacher.is_approved = False
         self.teacher.save(update_fields=["is_approved"])
         self.assertIsNone(approved_google_user_for_email("teacher@example.edu.tw"))
+
+
+    def test_phase_two_plan_links_learning_outcomes_to_a_student(self):
+        from .models import CoursePlan, IGPPlan, LearningOutcome, SemesterPlan
+
+        plan = IGPPlan.objects.create(student=self.student, academic_year="114", overall_goal="research")
+        semester = SemesterPlan.objects.create(igp_plan=plan, semester=1, goals="project")
+        course = CoursePlan.objects.create(semester_plan=semester, course_name="science", goals="question")
+        outcome = LearningOutcome.objects.create(course_plan=course, outcome="record")
+
+        self.assertEqual(outcome.course_plan.semester_plan.igp_plan.student, self.student)
 
 
 class StudentAccessTests(TestCase):
@@ -158,6 +204,33 @@ class StudentAccessTests(TestCase):
         self.assertContains(response, "得獎與紀錄")
         self.assertContains(response, "重視閱讀")
         self.assertContains(response, "科展")
+    def test_igp_plans_default_to_the_school_academic_year(self):
+        from .models import IGPPlan, SchoolSetting
+
+        SchoolSetting.objects.create(name="Test School", academic_year="115")
+        IGPPlan.objects.create(student=self.visible_student, academic_year="114", overall_goal="obsolete-goal-marker")
+        IGPPlan.objects.create(student=self.hidden_student, academic_year="115", overall_goal="current")
+        self.client.force_login(self.school_lead)
+
+        response = self.client.get(reverse("admin:accounts_igpplan_changelist"))
+
+        self.assertContains(response, "current")
+        self.assertNotContains(response, "obsolete-goal-marker")
+
+    def test_selected_semester_plan_can_open_the_copy_action(self):
+        from .models import IGPPlan, SemesterPlan
+
+        plan = IGPPlan.objects.create(student=self.visible_student, academic_year="115", overall_goal="goal")
+        semester = SemesterPlan.objects.create(igp_plan=plan, semester=1, goals="semester goal")
+        self.client.force_login(self.school_lead)
+
+        response = self.client.post(
+            reverse("admin:accounts_semesterplan_changelist"),
+            {"action": "copy_selected_plan", "_selected_action": semester.pk},
+        )
+
+        self.assertRedirects(response, reverse("admin:accounts_semesterplan_copy", args=[semester.pk]))
+
     def test_special_education_lead_can_open_the_import_page(self):
         self.client.force_login(self.school_lead)
 
@@ -432,6 +505,47 @@ class TeacherAssignmentBoardTests(TestCase):
         self.assertContains(board, "新增教師")
         self.assertContains(board, "指派學生")
         self.assertContains(assignment, 'type="checkbox"', count=6)
+
+    def test_lead_can_change_a_users_role_and_approval(self):
+        account = get_user_model().objects.create_user(
+            username="editable-user", email="editable@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.VIEWER, is_staff=True,
+        )
+        self.client.force_login(self.lead)
+
+        response = self.client.post(
+            reverse("admin:accounts_user_change", args=[account.pk]),
+            {
+                "username": account.username,
+                "email": account.email,
+                "role": get_user_model().Role.COURSE_TEACHER,
+                "is_approved": "on",
+                "is_active": "on",
+                "is_staff": "on",
+                "_save": "Save",
+            },
+        )
+
+        account.refresh_from_db()
+        self.assertRedirects(response, reverse("admin:accounts_user_changelist"))
+        self.assertEqual(account.role, get_user_model().Role.COURSE_TEACHER)
+        self.assertTrue(account.is_approved)
+
+    def test_teacher_can_be_created_with_an_approved_account(self):
+        account = get_user_model().objects.create_user(
+            username="matchable", email="matchable@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.COURSE_TEACHER, is_approved=True, is_staff=True,
+        )
+        self.client.force_login(self.lead)
+
+        response = self.client.post(
+            reverse("admin:accounts_studentstaffassignment_teacher_add"),
+            {"full_name": "Matched Teacher", "account": account.pk},
+        )
+
+        teacher = Teacher.objects.get(full_name="Matched Teacher")
+        self.assertRedirects(response, reverse("admin:accounts_studentstaffassignment_teacher", args=[teacher.pk]))
+        self.assertEqual(teacher.account, account)
 
     def test_user_admin_requires_email_instead_of_saving_an_empty_unique_value(self):
         self.client.force_login(self.lead)

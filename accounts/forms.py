@@ -4,7 +4,7 @@ from pathlib import Path
 from django import forms
 from django.db.models import Q
 
-from .models import InitialIGPProfile, Student, StudentStaffAssignment, Teacher, User
+from .models import IGPPlan, InitialIGPProfile, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 
 
 def split_choices(value):
@@ -121,4 +121,44 @@ class TeacherStudentAssignmentForm(forms.Form):
 class TeacherCreateForm(forms.ModelForm):
     class Meta:
         model = Teacher
-        fields = ("full_name",)
+        fields = ("full_name", "account")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["account"].queryset = User.objects.filter(
+            is_active=True, is_approved=True, teacher_profile__isnull=True
+        ).order_by("email", "username")
+        self.fields["account"].required = False
+        self.fields["account"].help_text = "???????????????????"
+
+
+class BulkIGPPlanForm(forms.Form):
+    students = forms.ModelMultipleChoiceField(label="Students", queryset=Student.objects.none(), widget=forms.CheckboxSelectMultiple)
+    academic_year = forms.CharField(label="Academic year", max_length=16)
+    overall_goal = forms.CharField(label="Annual goal", widget=forms.Textarea)
+    notes = forms.CharField(label="Notes", required=False, widget=forms.Textarea)
+
+    def __init__(self, *args, students=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["students"].queryset = students if students is not None else Student.objects.filter(is_active=True)
+
+
+class BulkSemesterPlanForm(forms.Form):
+    plans = forms.ModelMultipleChoiceField(label="IGP plans", queryset=IGPPlan.objects.none(), widget=forms.CheckboxSelectMultiple)
+    semester = forms.TypedChoiceField(label="Semester", choices=SemesterPlan.Semester.choices, coerce=int)
+    goals = forms.CharField(label="Semester goals", widget=forms.Textarea)
+    strategies = forms.CharField(label="Strategies", required=False, widget=forms.Textarea)
+
+    def __init__(self, *args, plans=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["plans"].queryset = plans if plans is not None else IGPPlan.objects.none()
+
+
+class CopySemesterPlanForm(forms.Form):
+    students = forms.ModelMultipleChoiceField(label="Target students", queryset=Student.objects.none(), widget=forms.CheckboxSelectMultiple)
+    academic_year = forms.CharField(label="Target academic year", max_length=16)
+
+    def __init__(self, *args, students=None, academic_year="", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["students"].queryset = students if students is not None else Student.objects.filter(is_active=True)
+        self.fields["academic_year"].initial = academic_year

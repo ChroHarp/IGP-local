@@ -88,3 +88,23 @@ def can_manage_program_documents(user) -> bool:
 
 
 
+
+
+def students_for_learning_outcomes(user):
+    if not user.is_authenticated:
+        return Student.objects.none()
+    if user.is_superuser or user.role in STUDENT_DATA_MANAGER_ROLES:
+        return visible_students_for(user)
+    if user.role != User.Role.COURSE_TEACHER:
+        return Student.objects.none()
+    today = timezone.localdate()
+    return Student.objects.filter(
+        staff_assignments__staff__account=user,
+        staff_assignments__role=StudentStaffAssignment.Role.COURSE_TEACHER,
+        staff_assignments__is_active=True,
+    ).filter(Q(staff_assignments__end_date__isnull=True) | Q(staff_assignments__end_date__gte=today)).distinct()
+
+
+def can_manage_learning_outcomes(user, student=None):
+    students = students_for_learning_outcomes(user)
+    return students.exists() if student is None else students.filter(pk=student.pk).exists()

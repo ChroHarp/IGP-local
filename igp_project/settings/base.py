@@ -77,8 +77,9 @@ AUTHENTICATION_BACKENDS = [
     "allauth.account.auth_backends.AuthenticationBackend",
 ]
 ACCOUNT_ADAPTER = "accounts.adapters.ClosedSignupAdapter"
-SOCIALACCOUNT_ADAPTER = "accounts.adapters.ClosedSignupAdapter"
+SOCIALACCOUNT_ADAPTER = "accounts.adapters.IGPAccountAdapter"
 SOCIALACCOUNT_AUTO_SIGNUP = False
+ACCOUNT_LOGIN_METHODS = {"username", "email"}
 SOCIALACCOUNT_LOGIN_ON_GET = False
 google_provider = {
     "SCOPE": ["profile", "email"],

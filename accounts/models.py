@@ -173,6 +173,11 @@ class StudentStaffAssignment(models.Model):
                 fields=["student", "staff", "role", "start_date"],
                 name="unique_student_staff_role_start_date",
             ),
+            models.UniqueConstraint(
+                fields=["student"],
+                condition=Q(role="case_manager", is_active=True, end_date__isnull=True),
+                name="one_current_case_manager_per_student",
+            ),
         ]
 
     def clean(self):
@@ -279,3 +284,100 @@ class AwardRecord(models.Model):
 
 
 
+
+
+class Assessment(models.Model):
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="assessments")
+    name = models.CharField("評量名稱", max_length=150)
+    assessed_on = models.DateField("評量日期", null=True, blank=True)
+    result = models.CharField("結果／分數", max_length=255, blank=True)
+    notes = models.TextField("說明", blank=True)
+
+    class Meta:
+        verbose_name = "評量紀錄"
+        verbose_name_plural = "評量紀錄"
+        ordering = ["-assessed_on", "name"]
+
+    def __str__(self):
+        return f"{self.student}－{self.name}"
+
+
+class Interest(models.Model):
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="interests")
+    category = models.CharField("領域", max_length=100)
+    detail = models.CharField("興趣內容", max_length=255)
+    notes = models.TextField("補充說明", blank=True)
+
+    class Meta:
+        verbose_name = "興趣"
+        verbose_name_plural = "興趣"
+        ordering = ["category", "detail"]
+
+    def __str__(self):
+        return f"{self.student}－{self.detail}"
+
+
+class IGPPlan(models.Model):
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="igp_plans")
+    academic_year = models.CharField("學年度", max_length=16)
+    overall_goal = models.TextField("年度目標")
+    notes = models.TextField("備註", blank=True)
+
+    class Meta:
+        verbose_name = "IGP 年度計畫"
+        verbose_name_plural = "IGP 年度計畫"
+        ordering = ["-academic_year"]
+        constraints = [models.UniqueConstraint(fields=["student", "academic_year"], name="unique_igp_plan_per_student_year")]
+
+    def __str__(self):
+        return f"{self.student}－{self.academic_year} IGP"
+
+
+class SemesterPlan(models.Model):
+    class Semester(models.IntegerChoices):
+        FIRST = 1, "第一學期"
+        SECOND = 2, "第二學期"
+
+    igp_plan = models.ForeignKey(IGPPlan, verbose_name="IGP 年度計畫", on_delete=models.CASCADE, related_name="semester_plans")
+    semester = models.PositiveSmallIntegerField("學期", choices=Semester.choices)
+    goals = models.TextField("學期目標")
+    strategies = models.TextField("執行策略", blank=True)
+
+    class Meta:
+        verbose_name = "學期計畫"
+        verbose_name_plural = "學期計畫"
+        ordering = ["igp_plan", "semester"]
+        constraints = [models.UniqueConstraint(fields=["igp_plan", "semester"], name="unique_semester_plan_per_igp")]
+
+    def __str__(self):
+        return f"{self.igp_plan}－{self.get_semester_display()}"
+
+
+class CoursePlan(models.Model):
+    semester_plan = models.ForeignKey(SemesterPlan, verbose_name="學期計畫", on_delete=models.CASCADE, related_name="course_plans")
+    course_name = models.CharField("課程名稱", max_length=150)
+    goals = models.TextField("課程目標")
+    activities = models.TextField("學習活動／調整", blank=True)
+
+    class Meta:
+        verbose_name = "課程計畫"
+        verbose_name_plural = "課程計畫"
+        ordering = ["course_name"]
+
+    def __str__(self):
+        return f"{self.semester_plan}－{self.course_name}"
+
+
+class LearningOutcome(models.Model):
+    course_plan = models.ForeignKey(CoursePlan, verbose_name="課程計畫", on_delete=models.CASCADE, related_name="learning_outcomes")
+    recorded_on = models.DateField("記錄日期", default=timezone.localdate)
+    outcome = models.TextField("學習成果")
+    reflection = models.TextField("檢核與調整", blank=True)
+
+    class Meta:
+        verbose_name = "學習成果"
+        verbose_name_plural = "學習成果"
+        ordering = ["-recorded_on", "-id"]
+
+    def __str__(self):
+        return f"{self.course_plan}－{self.recorded_on}"
