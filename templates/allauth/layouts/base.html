@@ -1,0 +1,55 @@
+{% load i18n %}
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block head_title %}IGP 本地管理{% endblock %}</title>
+  <style>
+    :root { color-scheme: light; font-family: "Noto Sans TC", "Microsoft JhengHei", Arial, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #f3f6f8; color: #1d2a33; }
+    .auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 2rem 1rem; }
+    .auth-card { width: min(100%, 30rem); background: #fff; border: 1px solid #d9e2e8; border-radius: .5rem; box-shadow: 0 .5rem 1.5rem rgba(22, 45, 61, .10); overflow: hidden; }
+    .auth-header { padding: 1.25rem 1.5rem; background: #e8f0f4; border-left: .3rem solid #417f9e; }
+    .auth-header h1 { margin: 0; color: #174c69; font-size: 1.35rem; }
+    .auth-header p { margin: .35rem 0 0; color: #58707f; font-size: .92rem; }
+    .auth-content { padding: 1.5rem; }
+    .auth-content h1 { margin-top: 0; font-size: 1.25rem; }
+    .auth-content form { display: grid; gap: 1rem; }
+    .auth-content label { display: block; margin-bottom: .35rem; font-weight: 600; }
+    .auth-content input { width: 100%; padding: .65rem .75rem; border: 1px solid #aebfc9; border-radius: .25rem; font: inherit; }
+    .auth-content input:focus { outline: .2rem solid #b7d8e8; border-color: #417f9e; }
+    .auth-content button, .auth-content [type="submit"] { padding: .65rem 1rem; border: 0; border-radius: .25rem; background: #286787; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    .auth-content button:hover, .auth-content [type="submit"]:hover { background: #1d526d; }
+    .auth-content ul { padding-left: 1.25rem; }
+    .auth-content .errorlist { margin: .25rem 0 0; color: #a52a2a; }
+    .messages { margin: 0 0 1rem; padding: .75rem 1rem; background: #edf6ed; border-left: .25rem solid #4e8f54; }
+    a { color: #1d678d; }
+  </style>
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  {% block body %}
+    <main class="auth-shell">
+      <section class="auth-card" aria-labelledby="auth-title">
+        <header class="auth-header">
+          <h1 id="auth-title">IGP 本地管理</h1>
+          <p>資優教育個別輔導計畫系統</p>
+        </header>
+        <div class="auth-content">
+          {% if messages %}
+            <div class="messages">
+              <ul>
+                {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+          {% block content %}{% endblock %}
+        </div>
+      </section>
+    </main>
+  {% endblock %}
+  {% block extra_body %}{% endblock %}
+</body>
+</html>

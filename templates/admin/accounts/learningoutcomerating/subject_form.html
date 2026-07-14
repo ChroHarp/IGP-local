@@ -1,4 +1,4 @@
-﻿{% extends "admin/base_site.html" %}
+{% extends "admin/base_site.html" %}
 {% block extrastyle %}
 {{ block.super }}
 <style>
@@ -18,7 +18,7 @@
     {% csrf_token %}
     {% for group in student_groups %}
       <section class="student-section">
-        <h2>{{ group.student }}</h2>
+        <h2>{% if group.can_view_all %}<a href="{% url 'admin:accounts_learningoutcomerating_student' group.student.pk %}">{{ group.student }}</a>{% else %}{{ group.student }}{% endif %}</h2>
         <table class="outcome-table">
           <thead><tr><th>學習表現</th><th>學習表現調整</th><th>教師評分</th></tr></thead>
           <tbody>

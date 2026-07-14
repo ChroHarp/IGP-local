@@ -1,6 +1,18 @@
-﻿{% extends "admin/base_site.html" %}
+{% extends "admin/base_site.html" %}
 {% block content %}
 <div id="content-main">
+  {% if case_students %}
+  <section class="module">
+    <h2>個管學生全部學習成果（唯讀）</h2>
+    <p>可查看個管學生所有科目的學習表現與教師評分，但不能在此修改。</p>
+    <ul>
+      {% for student in case_students %}
+        <li><a href="{% url 'admin:accounts_learningoutcomerating_student' student.pk %}">{{ student }}</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+  <h2>可評分課程</h2>
   {% if subjects %}
   <table>
     <thead><tr><th>學年度</th><th>學期</th><th>科目</th><th>授課教師</th><th>學生人數</th><th></th></tr></thead>
@@ -18,7 +30,7 @@
     </tbody>
   </table>
   {% else %}
-    <p>目前沒有可評分的課程。請先確認課程已指定授課教師，且學生已指派給該任課教師。</p>
+    <p>目前沒有可評分的課程。評分權限依課程計畫中的授課教師認定。</p>
   {% endif %}
 </div>
 {% endblock %}

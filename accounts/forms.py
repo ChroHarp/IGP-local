@@ -1,7 +1,8 @@
-﻿import re
+import re
 from pathlib import Path
 
 from django import forms
+from django.forms import inlineformset_factory
 from django.db.models import Q
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
@@ -101,13 +102,12 @@ class TeacherStudentAssignmentForm(forms.Form):
     assignment_fields = (
         (StudentStaffAssignment.Role.HOMEROOM_TEACHER, "homeroom_students"),
         (StudentStaffAssignment.Role.CASE_MANAGER, "case_manager_students"),
-        (StudentStaffAssignment.Role.COURSE_TEACHER, "course_students"),
     )
 
     account = forms.ModelChoiceField(label="登入帳號", queryset=User.objects.none(), required=False, help_text="可先留空，建立帳號後再回來綁定。")
     homeroom_students = forms.ModelMultipleChoiceField(label="擔任班級導師的學生", queryset=Student.objects.none(), required=False, widget=forms.CheckboxSelectMultiple)
     case_manager_students = forms.ModelMultipleChoiceField(label="擔任個管教師的學生", queryset=Student.objects.none(), required=False, widget=forms.CheckboxSelectMultiple)
-    course_students = forms.ModelMultipleChoiceField(label="擔任任課教師的學生", queryset=Student.objects.none(), required=False, widget=forms.CheckboxSelectMultiple)
+
 
     def __init__(self, *args, teacher=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -236,7 +236,28 @@ class CoursePlanForm(forms.ModelForm):
 
     class Meta:
         model = CoursePlan
-        fields = "__all__"
+        exclude = ("activities", "is_active",)
+
+
+class CourseGroupForm(CoursePlanForm):
+    academic_year = forms.CharField(label="學年度", max_length=16)
+    semester = forms.TypedChoiceField(label="學期", choices=SemesterPlan.Semester.choices, coerce=int)
+    students = forms.ModelMultipleChoiceField(
+        label="上課學生",
+        queryset=Student.objects.none(),
+        widget=forms.CheckboxSelectMultiple,
+    )
+
+    class Meta:
+        model = CoursePlan
+        fields = (
+            "course_name", "teacher", "goals", "learning_domains",
+            "special_needs_courses", "cognitive_adjustments", "affective_support", "skill_training",
+        )
+
+    def __init__(self, *args, students=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["students"].queryset = students if students is not None else Student.objects.filter(is_active=True)
 
 
 class CollapsibleCheckboxSelectMultiple(forms.CheckboxSelectMultiple):
@@ -256,6 +277,16 @@ class LearningPerformanceForm(forms.ModelForm):
     class Meta:
         model = LearningPerformance
         fields = "__all__"
+
+
+CourseLearningPerformanceFormSet = inlineformset_factory(
+    CoursePlan,
+    LearningPerformance,
+    form=LearningPerformanceForm,
+    fields=("description", "adjustment", "assessment_methods"),
+    extra=1,
+    can_delete=False,
+)
 
 
 class SemesterPlanForm(forms.ModelForm):

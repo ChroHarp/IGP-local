@@ -1,0 +1,154 @@
+{% extends "admin/base_site.html" %}
+{% block extrahead %}{{ block.super }}{{ media }}{% endblock %}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+.course-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.25rem; border-bottom: 1px solid var(--border-color, #ccc); padding-bottom: .6rem; }
+.course-tabs button { appearance: none; border: 1px solid var(--border-color, #ccc); background: var(--body-bg, #fff); color: var(--body-fg, #333); border-radius: 4px; padding: .5rem .8rem; font: inherit; cursor: pointer; }
+.course-tabs button[aria-selected="true"] { background: var(--primary, #417690); border-color: var(--primary, #417690); color: #fff; }
+.course-tabs button:focus-visible { outline: 3px solid var(--focus-color, #0e7490); outline-offset: 2px; }
+.course-tab-panel[hidden] { display: none; }
+.course-fields .form-row { padding: .75rem; border-bottom: 1px solid var(--hairline-color); }
+.course-fields .form-row > div { max-width: 70rem; }
+.course-fields textarea { width: min(100%, 70rem); }
+
+.student-choices ul { columns: 3 15rem; margin: 0; padding: 0; list-style: none; }
+.performance-table { width: 100%; }
+.performance-table th, .performance-table td { vertical-align: top; padding: .6rem; }
+.performance-table textarea { width: 100%; min-width: 14rem; }
+.performance-actions { display: flex; justify-content: flex-end; margin-top: .75rem; }
+.performance-actions button { padding: .5rem .8rem; font: inherit; cursor: pointer; }
+.student-links { display: flex; flex-wrap: wrap; gap: .5rem; }
+.student-links a { padding: .4rem .65rem; background: var(--darkened-bg); border-radius: .25rem; }
+@media (max-width: 760px) { .course-tabs button { flex: 1 1 42%; } .student-choices ul { columns: 1; } .performance-table { display: block; overflow-x: auto; } }
+</style>
+{% endblock %}
+{% block content %}
+<div id="content-main">
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% if form.non_field_errors %}{{ form.non_field_errors }}{% endif %}
+    <nav class="course-tabs" aria-label="課程設定分頁" role="tablist">
+      <button type="button" role="tab" id="course-tab-basic" aria-selected="true" aria-controls="course-panel-basic">課程基本資料</button>
+      <button type="button" role="tab" id="course-tab-students" aria-selected="false" aria-controls="course-panel-students">上課學生與個別計畫</button>
+      <button type="button" role="tab" id="course-tab-performance" aria-selected="false" aria-controls="course-panel-performance">學習表現與評量</button>
+
+    </nav>
+
+    <section class="course-tab-panel" id="course-panel-basic" role="tabpanel" aria-labelledby="course-tab-basic">
+      <fieldset class="module aligned course-fields">
+        <h2>課程共同設定</h2>
+        {{ form.academic_year.as_field_group }}
+        {{ form.semester.as_field_group }}
+        {{ form.course_name.as_field_group }}
+        {{ form.teacher.as_field_group }}
+        {{ form.goals.as_field_group }}
+      </fieldset>
+      <fieldset class="module aligned course-fields">
+        <h2>課程與特殊需求</h2>
+        <div class="form-row field-learning_domains">
+          <div><div class="flex-container">
+            <label>領域學習課程：</label>
+            {{ form.learning_domains.errors }}{{ form.learning_domains }}
+          </div></div>
+        </div>
+        <div class="form-row field-special_needs_courses">
+          <div><div class="flex-container">
+            <label>特殊需求課程：</label>
+            {{ form.special_needs_courses.errors }}{{ form.special_needs_courses }}
+          </div></div>
+        </div>
+        {{ form.cognitive_adjustments.as_field_group }}
+        {{ form.affective_support.as_field_group }}
+        {{ form.skill_training.as_field_group }}
+      </fieldset>
+    </section>
+
+    <section class="course-tab-panel" id="course-panel-students" role="tabpanel" aria-labelledby="course-tab-students" hidden>
+      <fieldset class="module aligned student-choices">
+        <h2>上課學生</h2>
+        <p>取消勾選會封存該生此課程，不會刪除既有學習成果與評分。</p>
+        {{ form.students.errors }}
+        {{ form.students }}
+      </fieldset>
+      {% if student_plans %}
+      <fieldset class="module">
+        <h2>學生個別計畫</h2>
+        <p>共同設定儲存後會同步至每位學生；點選學生姓名可再微調該生的課程計畫。</p>
+        <div class="student-links">
+          {% for plan in student_plans %}
+            <a href="{% url 'admin:accounts_courseplan_change' plan.pk %}">{{ plan.semester_plan.igp_plan.student }}</a>
+          {% endfor %}
+        </div>
+      </fieldset>
+      {% endif %}
+    </section>
+
+    <section class="course-tab-panel" id="course-panel-performance" role="tabpanel" aria-labelledby="course-tab-performance" hidden>
+      <fieldset class="module">
+        <h2>共同學習表現與評量方式</h2>
+        <p>新增條目後，儲存時會同步到所有上課學生的課程計畫。</p>
+        {{ formset.management_form }}
+        {{ formset.non_form_errors }}
+        <table class="performance-table">
+          <thead><tr><th>學習表現</th><th>學習表現調整</th><th>評量方式</th></tr></thead>
+          <tbody id="performance-form-list">
+          {% for item_form in formset %}
+            <tr class="performance-form">
+              <td>{{ item_form.id }}{{ item_form.description.errors }}{{ item_form.description }}</td>
+              <td>{{ item_form.adjustment.errors }}{{ item_form.adjustment }}</td>
+              <td>{{ item_form.assessment_methods.errors }}{{ item_form.assessment_methods }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <template id="performance-empty-form"><tr class="performance-form"><td>{{ empty_performance_form.id }}{{ empty_performance_form.description }}</td><td>{{ empty_performance_form.adjustment }}</td><td>{{ empty_performance_form.assessment_methods }}</td></tr></template>
+        <div class="performance-actions"><button type="button" id="add-performance">新增學習表現條目</button></div>
+      </fieldset>
+    </section>
+
+
+    <div class="submit-row"><input type="submit" value="儲存並同步課程" class="default"></div>
+  </form>
+</div>
+<script>
+(() => {
+  const tabs = [...document.querySelectorAll('.course-tabs [role="tab"]')];
+  const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls')));
+  const select = (tab) => {
+    tabs.forEach((item, index) => {
+      const selected = item === tab;
+      item.setAttribute('aria-selected', String(selected));
+      panels[index].hidden = !selected;
+    });
+  };
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => select(tab));
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[next].focus();
+      select(tabs[next]);
+    });
+  });
+  if (tabs.length) select(tabs[0]);
+
+  const addButton = document.getElementById('add-performance');
+  const list = document.getElementById('performance-form-list');
+  const empty = document.getElementById('performance-empty-form');
+  const total = document.getElementById('id_learning_performances-TOTAL_FORMS');
+  if (addButton && list && empty && total) {
+    addButton.addEventListener('click', () => {
+      const index = Number(total.value);
+      const row = empty.content.firstElementChild.cloneNode(true);
+      row.innerHTML = row.innerHTML.replaceAll('__prefix__', index);
+      list.appendChild(row);
+      total.value = String(index + 1);
+      document.dispatchEvent(new CustomEvent('formset:added', { bubbles: true }));
+      row.querySelector('textarea, input, select')?.focus();
+    });
+  }
+})();
+</script>
+{% endblock %}

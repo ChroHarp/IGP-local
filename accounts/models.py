@@ -375,6 +375,7 @@ class CoursePlan(models.Model):
     cognitive_adjustments = models.TextField("認知教學方面", blank=True)
     affective_support = models.TextField("情意輔導方面", blank=True)
     skill_training = models.TextField("技能培訓方面", blank=True)
+    is_active = models.BooleanField("目前修課", default=True)
 
     class Meta:
         verbose_name = "課程計畫"

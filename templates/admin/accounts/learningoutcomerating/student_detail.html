@@ -1,0 +1,41 @@
+{% extends "admin/base_site.html" %}
+{% block extrastyle %}
+{{ block.super }}
+<style>
+.course-result { margin: 1.25rem 0; }
+.course-result h2 { padding: .65rem .85rem; margin: 0; background: #e8eef2; border-left: .3rem solid #417690; }
+.result-meta { margin: 0; padding: .55rem .85rem; background: var(--darkened-bg); }
+.result-table { width: 100%; border-collapse: collapse; }
+.result-table th, .result-table td { padding: .65rem; border-bottom: 1px solid var(--border-color); vertical-align: top; }
+.archived { font-weight: 600; color: #8a4b08; }
+</style>
+{% endblock %}
+{% block content %}
+<div id="content-main">
+  <p>此頁為唯讀，呈現 {{ student }} 在所有課程中的學習成果。</p>
+  {% for course in courses %}
+    <section class="course-result">
+      <h2>{{ course.plan.course_name }}{% if not course.plan.is_active %} <span class="archived">（已封存）</span>{% endif %}</h2>
+      <p class="result-meta">{{ course.plan.semester_plan.igp_plan.academic_year }}｜{{ course.plan.semester_plan.get_semester_display }}｜{{ course.plan.teacher|default:"尚未指定授課教師" }}</p>
+      <table class="result-table">
+        <thead><tr><th>學習表現</th><th>學習表現調整</th><th>評量方式</th><th>教師評分</th><th>評語</th></tr></thead>
+        <tbody>
+        {% for row in course.rows %}
+          <tr>
+            <td>{{ row.performance.description|default:"－" }}</td>
+            <td>{{ row.performance.adjustment|default:"－" }}</td>
+            <td>{{ row.performance.assessment_methods|default:"－" }}</td>
+            <td>{% if row.rating %}{{ row.rating.get_rating_display }}{% else %}尚未評分{% endif %}</td>
+            <td>{% if row.rating %}{{ row.rating.notes|default:"－" }}{% else %}－{% endif %}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="5">這門課尚未建立學習表現條目。</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% empty %}
+    <p>此學生目前沒有課程計畫。</p>
+  {% endfor %}
+</div>
+{% endblock %}

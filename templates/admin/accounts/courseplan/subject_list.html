@@ -1,0 +1,28 @@
+{% extends "admin/base_site.html" %}
+{% block object-tools-items %}
+<li><a href="{% url 'admin:accounts_courseplan_group_add' %}" class="addlink">新增課程</a></li>
+{% endblock %}
+{% block content %}
+<div id="content-main">
+  <p>以課程為主軸管理共同設定與上課學生；點進學生姓名可做個別微調。</p>
+  {% if course_groups %}
+  <table id="result_list">
+    <thead><tr><th>課程名稱</th><th>學年度</th><th>學期</th><th>授課教師</th><th>上課學生</th><th></th></tr></thead>
+    <tbody>
+    {% for item in course_groups %}
+      <tr>
+        <th><a href="{% url 'admin:accounts_courseplan_group' item.plan.pk %}">{{ item.plan.course_name }}</a></th>
+        <td>{{ item.plan.semester_plan.igp_plan.academic_year }}</td>
+        <td>{{ item.plan.semester_plan.get_semester_display }}</td>
+        <td>{% if item.has_mixed_teachers %}多位教師（請進入統一設定）{% else %}{{ item.plan.teacher|default:"尚未指定" }}{% endif %}</td>
+        <td>{{ item.student_count }} 人</td>
+        <td><a class="button" href="{% url 'admin:accounts_courseplan_group' item.plan.pk %}">管理課程</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>目前學年度尚未建立課程。</p>
+  {% endif %}
+</div>
+{% endblock %}

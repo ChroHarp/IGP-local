@@ -15,7 +15,7 @@ from django.urls import reverse
 
 from .importers import import_basic_students
 from .models import AwardRecord, FamilyMember, Guardian, InitialIGPProfile, ProgramDocument, Student, StudentStaffAssignment, Teacher
-from .policies import approved_google_user_for_email, visible_students_for
+from .policies import approved_google_user_for_email, can_manage_learning_outcomes, visible_students_for
 
 
 class ProjectSmokeTests(TestCase):
@@ -42,7 +42,10 @@ class AccountLoginTests(TestCase):
             is_approved=True, is_active=True,
         )
 
-        self.assertEqual(self.client.get(reverse("account_login")).status_code, 200)
+        login_page = self.client.get(reverse("account_login"))
+        self.assertEqual(login_page.status_code, 200)
+        self.assertContains(login_page, "auth-shell")
+        self.assertContains(login_page, "IGP 本地管理")
         response = self.client.post(reverse("account_login"), {"login": user.username, "password": "safe-test-password"})
 
         self.assertEqual(response.status_code, 302)
@@ -430,44 +433,54 @@ class TeacherAssignmentBoardTests(TestCase):
         self.second_student = Student.objects.create(full_name="第二位學生")
         self.url = reverse("admin:accounts_studentstaffassignment_teacher", args=[self.teacher.pk])
 
-    def test_lead_can_assign_many_students_and_preserve_unchecked_history(self):
+    def test_lead_can_assign_case_manager_students_and_preserve_unchecked_history(self):
         self.client.force_login(self.lead)
         board = self.client.get(reverse("admin:accounts_studentstaffassignment_changelist"))
         self.assertEqual(board.status_code, 200)
         self.assertContains(board, "course")
 
-        self.client.post(self.url, {"account": self.teacher_account.pk, "course_students": [self.first_student.pk, self.second_student.pk]})
+        self.client.post(self.url, {"account": self.teacher_account.pk, "case_manager_students": [self.first_student.pk, self.second_student.pk]})
         self.assertEqual(StudentStaffAssignment.objects.filter(staff=self.teacher, is_active=True).count(), 2)
 
-        self.client.post(self.url, {"account": self.teacher_account.pk, "course_students": [self.first_student.pk]})
+        self.client.post(self.url, {"account": self.teacher_account.pk, "case_manager_students": [self.first_student.pk]})
         self.assertTrue(StudentStaffAssignment.objects.get(staff=self.teacher, student=self.first_student).is_active)
         self.assertFalse(StudentStaffAssignment.objects.get(staff=self.teacher, student=self.second_student).is_active)
 
-    def test_roles_are_saved_independently_for_the_same_teacher(self):
+    def test_homeroom_and_case_manager_roles_are_saved_independently(self):
         self.client.force_login(self.lead)
 
         self.client.post(self.url, {
             "account": self.teacher_account.pk,
             "homeroom_students": [self.first_student.pk, self.second_student.pk],
             "case_manager_students": [self.second_student.pk],
-            "course_students": [self.first_student.pk, self.second_student.pk],
         })
 
         active = StudentStaffAssignment.objects.filter(staff=self.teacher, is_active=True)
-        self.assertEqual(active.count(), 5)
+        self.assertEqual(active.count(), 3)
         self.assertTrue(active.filter(student=self.second_student, role=StudentStaffAssignment.Role.HOMEROOM_TEACHER).exists())
         self.assertTrue(active.filter(student=self.second_student, role=StudentStaffAssignment.Role.CASE_MANAGER).exists())
-        self.assertTrue(active.filter(student=self.second_student, role=StudentStaffAssignment.Role.COURSE_TEACHER).exists())
+        self.assertFalse(active.filter(role=StudentStaffAssignment.Role.COURSE_TEACHER).exists())
         self.client.post(self.url, {
             "account": self.teacher_account.pk,
-            "homeroom_students": [self.first_student.pk, self.second_student.pk],
+            "homeroom_students": [self.first_student.pk],
             "case_manager_students": [self.second_student.pk],
+        })
+
+        self.assertFalse(StudentStaffAssignment.objects.get(student=self.second_student, role=StudentStaffAssignment.Role.HOMEROOM_TEACHER).is_active)
+        self.assertTrue(active.get(student=self.second_student, role=StudentStaffAssignment.Role.CASE_MANAGER).is_active)
+
+    def test_course_students_cannot_be_assigned_from_teacher_board(self):
+        self.client.force_login(self.lead)
+
+        self.client.post(self.url, {
+            "account": self.teacher_account.pk,
             "course_students": [self.first_student.pk],
         })
 
-        self.assertTrue(active.get(student=self.second_student, role=StudentStaffAssignment.Role.HOMEROOM_TEACHER).is_active)
-        self.assertTrue(active.get(student=self.second_student, role=StudentStaffAssignment.Role.CASE_MANAGER).is_active)
-        self.assertFalse(StudentStaffAssignment.objects.get(student=self.second_student, role=StudentStaffAssignment.Role.COURSE_TEACHER).is_active)
+        self.assertFalse(StudentStaffAssignment.objects.filter(
+            staff=self.teacher,
+            role=StudentStaffAssignment.Role.COURSE_TEACHER,
+        ).exists())
     def test_lead_can_create_a_teacher_without_an_account(self):
         self.client.force_login(self.lead)
         response = self.client.post(
@@ -496,7 +509,17 @@ class TeacherAssignmentBoardTests(TestCase):
         self.assertRedirects(response, reverse("admin:accounts_studentstaffassignment_changelist"))
         self.assertEqual(teacher.account, account)
 
-    def test_board_exposes_teacher_first_workflow(self):
+    def test_board_edits_case_and_homeroom_assignments_and_shows_course_students_read_only(self):
+        from .models import CoursePlan, IGPPlan, SemesterPlan
+
+        annual = IGPPlan.objects.create(student=self.first_student, academic_year="115", overall_goal="goal")
+        semester = SemesterPlan.objects.create(igp_plan=annual, semester=1, goals="semester goal")
+        CoursePlan.objects.create(
+            semester_plan=semester,
+            course_name="Mathematics",
+            teacher=self.teacher,
+            goals="course goal",
+        )
         self.client.force_login(self.lead)
 
         board = self.client.get(reverse("admin:accounts_studentstaffassignment_changelist"))
@@ -504,7 +527,11 @@ class TeacherAssignmentBoardTests(TestCase):
 
         self.assertContains(board, "新增教師")
         self.assertContains(board, "指派學生")
-        self.assertContains(assignment, 'type="checkbox"', count=6)
+        self.assertContains(board, "任課教師")
+        self.assertContains(assignment, 'type="checkbox"', count=4)
+        self.assertContains(assignment, "任課學生（由課程計畫自動帶入）")
+        self.assertContains(assignment, self.first_student.full_name)
+        self.assertNotContains(assignment, 'name="course_students"')
 
     def test_lead_can_change_a_users_role_and_approval(self):
         account = get_user_model().objects.create_user(
@@ -595,9 +622,6 @@ class LearningOutcomeRatingWorkflowTests(TestCase):
         self.students = [Student.objects.create(full_name=name) for name in ("Student A", "Student B")]
         self.performances = []
         for student in self.students:
-            StudentStaffAssignment.objects.create(
-                student=student, staff=self.teacher, role=StudentStaffAssignment.Role.COURSE_TEACHER,
-            )
             plan = IGPPlan.objects.create(student=student, academic_year="115", overall_goal="goal")
             semester = SemesterPlan.objects.create(igp_plan=plan, semester=1, course_needs_assessment="needs", goals="semester goal")
             course = CoursePlan.objects.create(semester_plan=semester, course_name="Mathematics", teacher=self.teacher, goals="course goal")
@@ -625,6 +649,87 @@ class LearningOutcomeRatingWorkflowTests(TestCase):
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[0]).rating, 3)
         self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[1]).rating, 4)
 
+    def test_case_manager_without_a_taught_course_cannot_rate_their_case_student(self):
+        case_account = get_user_model().objects.create_user(
+            username="case-only", email="case-only@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.CASE_MANAGER, is_approved=True, is_staff=True,
+        )
+        case_teacher = Teacher.objects.create(full_name="Case Only", account=case_account)
+        StudentStaffAssignment.objects.create(
+            student=self.students[0], staff=case_teacher, role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+
+        from .models import LearningOutcomeRating
+
+        LearningOutcomeRating.objects.create(
+            learning_performance=self.performances[0],
+            rating=LearningOutcomeRating.Rating.GOOD,
+            notes="read-only result",
+        )
+        self.assertFalse(can_manage_learning_outcomes(case_account))
+        self.client.force_login(case_account)
+        dashboard = self.client.get(reverse("admin:accounts_learningoutcomerating_changelist"))
+        response = self.client.get(reverse("admin:accounts_learningoutcomerating_subject", args=[self.source.pk]))
+        student_url = reverse("admin:accounts_learningoutcomerating_student", args=[self.students[0].pk])
+        student_page = self.client.get(student_url)
+        rejected_post = self.client.post(student_url, {"rating": "4"})
+
+        self.assertContains(dashboard, self.students[0].full_name)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(student_page.status_code, 200)
+        self.assertContains(student_page, "○3 良好")
+        self.assertContains(student_page, "read-only result")
+        self.assertNotContains(student_page, "<select")
+        self.assertEqual(rejected_post.status_code, 405)
+
+    def test_case_manager_who_teaches_can_rate_only_their_own_courses(self):
+        from .models import CoursePlan, IGPPlan, LearningOutcomeRating, LearningPerformance, SemesterPlan
+
+        self.account.role = get_user_model().Role.CASE_MANAGER
+        self.account.save(update_fields=["role"])
+        for student in self.students:
+            StudentStaffAssignment.objects.create(
+                student=student, staff=self.teacher, role=StudentStaffAssignment.Role.CASE_MANAGER,
+            )
+        other_account = get_user_model().objects.create_user(
+            username="other-teacher", email="other-teacher@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.COURSE_TEACHER, is_approved=True, is_staff=True,
+        )
+        other_teacher = Teacher.objects.create(full_name="Other Teacher", account=other_account)
+        other_student = Student.objects.create(full_name="Other Student")
+        StudentStaffAssignment.objects.create(
+            student=other_student, staff=self.teacher, role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        other_plan = IGPPlan.objects.create(student=other_student, academic_year="115", overall_goal="goal")
+        other_semester = SemesterPlan.objects.create(igp_plan=other_plan, semester=1, goals="semester goal")
+        other_course = CoursePlan.objects.create(
+            semester_plan=other_semester, course_name="Mathematics", teacher=other_teacher, goals="course goal",
+        )
+        other_performance = LearningPerformance.objects.create(course_plan=other_course, description="Other performance")
+
+        self.assertTrue(can_manage_learning_outcomes(self.account, self.students[0]))
+        self.assertFalse(can_manage_learning_outcomes(self.account, other_student))
+        self.client.force_login(self.account)
+        own_url = reverse("admin:accounts_learningoutcomerating_subject", args=[self.source.pk])
+        own_page = self.client.get(own_url)
+        denied_page = self.client.get(reverse("admin:accounts_learningoutcomerating_subject", args=[other_course.pk]))
+        response = self.client.post(own_url, {
+            f"rating-{self.performances[0].pk}": "4",
+            f"rating-{other_performance.pk}": "4",
+        })
+
+        self.assertContains(own_page, "Student A")
+        self.assertContains(own_page, "Student B")
+        self.assertContains(
+            own_page,
+            reverse("admin:accounts_learningoutcomerating_student", args=[self.students[0].pk]),
+        )
+        self.assertNotContains(own_page, "Other Student")
+        self.assertEqual(denied_page.status_code, 404)
+        self.assertRedirects(response, own_url)
+        self.assertEqual(LearningOutcomeRating.objects.get(learning_performance=self.performances[0]).rating, 4)
+        self.assertFalse(LearningOutcomeRating.objects.filter(learning_performance=other_performance).exists())
+
 
 class PlanCopyActionTests(TestCase):
     def setUp(self):
@@ -643,19 +748,19 @@ class PlanCopyActionTests(TestCase):
         self.course = CoursePlan.objects.create(semester_plan=self.semester, course_name="Mathematics", goals="course")
         self.performance = LearningPerformance.objects.create(course_plan=self.course, description="performance", assessment_methods="written")
 
-    def test_annual_and_course_copy_actions_open_their_target_forms(self):
+    def test_annual_copy_action_and_course_group_list_render(self):
         self.client.force_login(self.lead)
         annual_response = self.client.post(
             reverse("admin:accounts_igpplan_changelist"),
             {"action": "copy_selected_annual_plan", "_selected_action": self.annual.pk},
         )
-        course_response = self.client.post(
-            reverse("admin:accounts_courseplan_changelist"),
-            {"action": "copy_selected_course_plan", "_selected_action": self.course.pk},
-        )
+        course_response = self.client.get(reverse("admin:accounts_courseplan_changelist"))
 
         self.assertRedirects(annual_response, reverse("admin:accounts_igpplan_copy", args=[self.annual.pk]))
-        self.assertRedirects(course_response, reverse("admin:accounts_courseplan_copy", args=[self.course.pk]))
+        self.assertEqual(course_response.status_code, 200)
+        self.assertEqual(len(course_response.context["course_groups"]), 1)
+        self.assertContains(course_response, "Mathematics")
+        self.assertNotContains(course_response, self.source_student.full_name)
 
     def test_course_plan_change_form_renders(self):
         self.client.force_login(self.lead)
@@ -663,6 +768,15 @@ class PlanCopyActionTests(TestCase):
         response = self.client.get(reverse("admin:accounts_courseplan_change", args=[self.course.pk]))
 
         self.assertEqual(response.status_code, 200)
+
+    def test_course_plan_change_form_displays_learning_performances(self):
+        self.client.force_login(self.lead)
+
+        response = self.client.get(reverse("admin:accounts_courseplan_change", args=[self.course.pk]))
+
+        self.assertContains(response, "學習表現")
+        self.assertContains(response, self.performance.description)
+        self.assertContains(response, "learning_performances-TOTAL_FORMS")
 
     def test_admin_course_plan_needs_are_saved_and_restored(self):
         self.client.force_login(self.lead)
@@ -700,6 +814,47 @@ class PlanCopyActionTests(TestCase):
         self.assertEqual(restored.value(), ["加深加廣"])
         self.assertIn("checked", str(restored))
 
+    def test_course_group_add_creates_student_plans_from_one_course(self):
+        from .models import CoursePlan
+
+        self.client.force_login(self.lead)
+        prefix = "learning_performances"
+        response = self.client.post(reverse("admin:accounts_courseplan_group_add"), {
+            "academic_year": "115",
+            "semester": 2,
+            "students": [self.source_student.pk, self.target_student.pk],
+            "course_name": "Science Inquiry",
+            "teacher": "",
+            "goals": "shared science goal",
+            "activities": "experiment",
+            "learning_domains": [],
+            "special_needs_courses": [],
+            "cognitive_adjustments": [],
+            "affective_support": [],
+            "skill_training": [],
+            f"{prefix}-TOTAL_FORMS": 1,
+            f"{prefix}-INITIAL_FORMS": 0,
+            f"{prefix}-MIN_NUM_FORMS": 0,
+            f"{prefix}-MAX_NUM_FORMS": 1000,
+            f"{prefix}-0-id": "",
+            f"{prefix}-0-description": "science performance",
+            f"{prefix}-0-adjustment": "individual support",
+            f"{prefix}-0-assessment_methods": [],
+        })
+
+        plans = CoursePlan.objects.filter(course_name="Science Inquiry", is_active=True)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(plans.count(), 2)
+        self.assertEqual(
+            set(plans.values_list("semester_plan__igp_plan__student_id", flat=True)),
+            {self.source_student.pk, self.target_student.pk},
+        )
+        self.assertEqual(set(plans.values_list("goals", flat=True)), {"shared science goal"})
+        self.assertEqual(
+            set(plans.values_list("learning_performances__description", flat=True)),
+            {"science performance"},
+        )
+
     def test_learning_performance_uses_automatic_sequence(self):
         from .models import LearningPerformance
 
@@ -708,16 +863,61 @@ class PlanCopyActionTests(TestCase):
 
         self.assertEqual((first.sort_order, second.sort_order), (2, 3))
 
-    def test_course_copy_preserves_performances_and_semester_assessment(self):
-        from .models import CoursePlan
+    def test_course_group_syncs_students_and_archives_without_deleting_results(self):
+        from .models import CoursePlan, LearningOutcomeRating
 
         self.client.force_login(self.lead)
-        response = self.client.post(
-            reverse("admin:accounts_courseplan_copy", args=[self.course.pk]),
-            {"students": [self.target_student.pk], "academic_year": "116", "semester": 1},
-        )
+        group_url = reverse("admin:accounts_courseplan_group", args=[self.course.pk])
+        prefix = "learning_performances"
+        shared_data = {
+            "academic_year": "115",
+            "semester": 1,
+            "students": [self.source_student.pk, self.target_student.pk],
+            "course_name": "Mathematics",
+            "teacher": "",
+            "goals": "shared course goal",
+            "activities": "shared activity",
+            "learning_domains": [],
+            "special_needs_courses": [],
+            "cognitive_adjustments": [],
+            "affective_support": [],
+            "skill_training": [],
+            f"{prefix}-TOTAL_FORMS": 1,
+            f"{prefix}-INITIAL_FORMS": 1,
+            f"{prefix}-MIN_NUM_FORMS": 0,
+            f"{prefix}-MAX_NUM_FORMS": 1000,
+            f"{prefix}-0-id": self.performance.pk,
+            f"{prefix}-0-course_plan": self.course.pk,
+            f"{prefix}-0-description": "shared performance",
+            f"{prefix}-0-adjustment": "shared adjustment",
+            f"{prefix}-0-assessment_methods": [],
+        }
+        response = self.client.post(group_url, shared_data)
 
-        target = CoursePlan.objects.get(semester_plan__igp_plan__student=self.target_student, course_name="Mathematics")
-        self.assertRedirects(response, reverse("admin:accounts_courseplan_changelist"))
+        target = CoursePlan.objects.get(
+            semester_plan__igp_plan__student=self.target_student,
+            course_name="Mathematics",
+        )
+        self.assertRedirects(response, reverse("admin:accounts_courseplan_group", args=[self.course.pk]))
+        self.assertEqual(target.goals, "shared course goal")
         self.assertEqual(target.semester_plan.learning_domains, "mathematics")
-        self.assertEqual(target.learning_performances.get().description, "performance")
+        self.assertEqual(target.learning_performances.get().description, "shared performance")
+        group_page = self.client.get(group_url)
+        self.assertContains(group_page, self.source_student.full_name)
+        self.assertContains(group_page, self.target_student.full_name)
+        self.assertContains(group_page, reverse("admin:accounts_courseplan_change", args=[target.pk]))
+        self.assertContains(group_page, 'id="add-performance"')
+        self.assertContains(group_page, "__prefix__")
+
+        target_performance = target.learning_performances.get()
+        rating = LearningOutcomeRating.objects.create(
+            learning_performance=target_performance,
+            rating=LearningOutcomeRating.Rating.EXCELLENT,
+        )
+        shared_data["students"] = [self.source_student.pk]
+        archive_response = self.client.post(group_url, shared_data)
+        target.refresh_from_db()
+
+        self.assertEqual(archive_response.status_code, 302)
+        self.assertFalse(target.is_active)
+        self.assertTrue(LearningOutcomeRating.objects.filter(pk=rating.pk).exists())
