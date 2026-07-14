@@ -119,6 +119,20 @@ uv sync
 
 接著重新執行 `runserver`。只要更新包含 migration，就一定要執行 `migrate`。
 
+### 資料庫 migration 與交接
+
+Migration 是資料庫結構與資料轉換的正式紀錄，會隨程式碼一起版本控制；Django 會在資料庫的 `django_migrations` 表記錄已套用項目，因此同一個轉換不會重複執行。
+
+接手既有資料庫或拉取新版本後，依序執行：
+
+```powershell
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py check
+.\.venv\Scripts\python.exe manage.py showmigrations accounts
+```
+
+執行資料 migration 前，先私下備份 `db.sqlite3`，但不得提交備份檔至 Git。以 2026-07 的課程範本調整為例，`0016_course_plan_templates` 與 `0017_populate_course_plan_templates` 會將既有課程轉成「課程範本＋學生個別版本」；升級後應確認 `showmigrations` 顯示兩者均為 `[X]`。
+
 ### 5. 帶入既有校務資料（重要）
 
 若這台電腦要接手既有系統，不能只複製程式碼。請在原電腦停止服務後，由資訊人員安全複製下列資料，且不要提交到 Git：

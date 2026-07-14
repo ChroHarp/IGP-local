@@ -366,6 +366,15 @@ class SemesterPlan(models.Model):
 
 class CoursePlan(models.Model):
     semester_plan = models.ForeignKey(SemesterPlan, verbose_name="學期計畫", on_delete=models.CASCADE, related_name="course_plans")
+    template = models.ForeignKey(
+        "self",
+        verbose_name="課程範本",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_plans",
+    )
+    is_template = models.BooleanField("課程範本", default=False)
     course_name = models.CharField("課程名稱", max_length=150)
     teacher = models.ForeignKey(Teacher, verbose_name="授課教師", on_delete=models.PROTECT, null=True, blank=True, related_name="course_plans")
     goals = models.TextField("課程目標")

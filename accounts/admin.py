@@ -2,7 +2,7 @@ from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import Http404, HttpResponseNotAllowed, HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.shortcuts import get_object_or_404
@@ -34,6 +34,20 @@ admin.site.index_title = "學校資料管理"
 
 def current_academic_year():
     return SchoolSetting.objects.values_list("academic_year", flat=True).first() or ""
+
+
+def reanchor_course_templates(semester_plan_ids):
+    semester_plan_ids = set(semester_plan_ids)
+    if not semester_plan_ids:
+        return
+    templates = CoursePlan.objects.filter(is_template=True, semester_plan_id__in=semester_plan_ids)
+    for template in templates:
+        replacement = template.student_plans.exclude(
+            semester_plan_id__in=semester_plan_ids
+        ).select_related("semester_plan").first()
+        if replacement:
+            template.semester_plan = replacement.semester_plan
+            template.save(update_fields=("semester_plan",))
 
 
 _original_get_app_list = admin.site.get_app_list
@@ -154,6 +168,9 @@ class IGPPlanInline(StudentRelatedInlinePermissions, admin.StackedInline):
         ("綜合評析與策略", {"fields": ("qualitative_analysis", "learning_strategies", "notes")}),
     )
 
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
@@ -254,6 +271,18 @@ class IGPPlanAdmin(StudentDataAdmin):
     search_fields = ("student__full_name", "academic_year", "overall_goal")
     actions = ("copy_selected_annual_plan",)
 
+    def has_delete_permission(self, request, obj=None):
+        return can_manage_school_settings(request.user)
+
+    def delete_model(self, request, obj):
+        reanchor_course_templates(obj.semester_plans.values_list("pk", flat=True))
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        semester_ids = SemesterPlan.objects.filter(igp_plan__in=queryset).values_list("pk", flat=True)
+        reanchor_course_templates(semester_ids)
+        super().delete_queryset(request, queryset)
+
     @admin.action(description="Copy selected annual plan to other students")
     def copy_selected_annual_plan(self, request, queryset):
         if queryset.count() != 1:
@@ -317,6 +346,9 @@ class CoursePlanInline(StudentRelatedInlinePermissions, admin.TabularInline):
     show_change_link = True
     fields = ("course_name", "teacher", "goals")
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).filter(is_template=False)
+
 
 @admin.register(SemesterPlan)
 class SemesterPlanAdmin(StudentDataAdmin):
@@ -335,6 +367,17 @@ class SemesterPlanAdmin(StudentDataAdmin):
     list_filter = ("semester", "igp_plan__academic_year")
     search_fields = ("igp_plan__student__full_name", "goals")
     actions = ("copy_selected_plan",)
+
+    def has_delete_permission(self, request, obj=None):
+        return can_manage_school_settings(request.user)
+
+    def delete_model(self, request, obj):
+        reanchor_course_templates([obj.pk])
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        reanchor_course_templates(queryset.values_list("pk", flat=True))
+        super().delete_queryset(request, queryset)
 
     @admin.action(description="Copy selected plan to other students")
     def copy_selected_plan(self, request, queryset):
@@ -406,7 +449,7 @@ class SemesterPlanAdmin(StudentDataAdmin):
                     semester=source.semester,
                     defaults={"course_needs_assessment": source.course_needs_assessment, "learning_domains": source.learning_domains, "special_needs_courses": source.special_needs_courses, "goals": source.goals, "strategies": source.strategies},
                 )
-                for course in source.course_plans.all():
+                for course in source.course_plans.filter(is_template=False):
                     CoursePlan.objects.get_or_create(
                         semester_plan=target_semester,
                         course_name=course.course_name,
@@ -417,7 +460,7 @@ class SemesterPlanAdmin(StudentDataAdmin):
                             "skill_training": course.skill_training,
                         },
                     )
-                    target_course = CoursePlan.objects.get(semester_plan=target_semester, course_name=course.course_name)
+                    target_course = CoursePlan.objects.get(semester_plan=target_semester, course_name=course.course_name, is_template=False)
                     for performance in course.learning_performances.all():
                         LearningPerformance.objects.get_or_create(
                             course_plan=target_course, description=performance.description,
@@ -493,20 +536,17 @@ class CoursePlanAdmin(StudentDataAdmin):
         return ()
 
     def changelist_view(self, request, extra_context=None):
-        plans = self.get_queryset(request).filter(is_active=True).select_related(
-            "semester_plan__igp_plan__student", "teacher"
+        plans = self.get_queryset(request).filter(is_active=True, is_template=False).select_related(
+            "semester_plan__igp_plan__student", "teacher", "template__semester_plan__igp_plan", "template__teacher"
         )
         academic_year = current_academic_year()
         if academic_year:
             plans = plans.filter(semester_plan__igp_plan__academic_year=academic_year)
         groups = {}
         for plan in plans:
-            key = (
-                plan.semester_plan.igp_plan.academic_year,
-                plan.semester_plan.semester,
-                plan.course_name,
-            )
-            group = groups.setdefault(key, {"plan": plan, "student_ids": set(), "teacher_ids": set()})
+            group_plan = plan.template or plan
+            key = (group_plan.pk,)
+            group = groups.setdefault(key, {"plan": group_plan, "student_ids": set(), "teacher_ids": set()})
             group["student_ids"].add(plan.semester_plan.igp_plan.student_id)
             group["teacher_ids"].add(plan.teacher_id)
         course_groups = [
@@ -530,9 +570,8 @@ class CoursePlanAdmin(StudentDataAdmin):
 
     def group_plans_for(self, request, source):
         return self.get_queryset(request).filter(
-            semester_plan__igp_plan__academic_year=source.semester_plan.igp_plan.academic_year,
-            semester_plan__semester=source.semester_plan.semester,
-            course_name=source.course_name,
+            template=source,
+            is_template=False,
         ).select_related("semester_plan__igp_plan__student", "semester_plan__igp_plan")
 
     def available_students_for(self, request):
@@ -602,7 +641,7 @@ class CoursePlanAdmin(StudentDataAdmin):
             target_item.assessment_methods = source_item.assessment_methods
             target_item.save(update_fields=("description", "adjustment", "assessment_methods"))
 
-    def save_group(self, form, formset, source, old_plans):
+    def save_group(self, form, formset, source, old_plans, overwrite_existing=False):
         selected_students = list(form.cleaned_data["students"])
         selected_ids = {student.pk for student in selected_students}
         academic_year = form.cleaned_data["academic_year"]
@@ -616,7 +655,8 @@ class CoursePlanAdmin(StudentDataAdmin):
         if source is None:
             first_student = selected_students[0]
             common.semester_plan = self.semester_for(first_student, academic_year, semester_number, None)
-            common.is_active = True
+            common.is_template = True
+            common.is_active = False
             common.save()
             source = common
         else:
@@ -634,15 +674,20 @@ class CoursePlanAdmin(StudentDataAdmin):
                     semester_plan=semester,
                     course_name=common.course_name,
                     teacher=common.teacher,
+                    is_template=False,
                 ).first()
+            is_new = target is None
             if target is None:
-                target = CoursePlan(semester_plan=semester)
+                target = CoursePlan(semester_plan=semester, template=source)
             target.semester_plan = semester
-            for field in self.shared_fields:
-                setattr(target, field, getattr(common, field))
+            target.template = source
+            if is_new or overwrite_existing:
+                for field in self.shared_fields:
+                    setattr(target, field, getattr(common, field))
             target.is_active = True
             target.save()
-            self.sync_performances(source, target)
+            if is_new or overwrite_existing:
+                self.sync_performances(source, target)
             active_plans.append(target)
 
         for plan in old_plans:
@@ -653,10 +698,27 @@ class CoursePlanAdmin(StudentDataAdmin):
         return active_plans[0]
 
     def group_view(self, request, plan_id):
-        source = get_object_or_404(
-            self.get_queryset(request).select_related("semester_plan__igp_plan__student"),
-            pk=plan_id,
+        visible_students = visible_students_for(request.user)
+        requested_plan = get_object_or_404(
+            CoursePlan.objects.select_related("template", "semester_plan__igp_plan__student").filter(
+                Q(pk=plan_id, is_template=False, semester_plan__igp_plan__student__in=visible_students)
+                | Q(pk=plan_id, is_template=True, student_plans__semester_plan__igp_plan__student__in=visible_students)
+            ).distinct()
         )
+        source = requested_plan.template or requested_plan
+        if not source.is_template:
+            values = {field: getattr(source, field) for field in self.shared_fields}
+            with transaction.atomic():
+                source = CoursePlan.objects.create(
+                    semester_plan=requested_plan.semester_plan,
+                    is_template=True,
+                    is_active=False,
+                    activities=requested_plan.activities,
+                    **values,
+                )
+                self.sync_performances(requested_plan, source)
+                requested_plan.template = source
+                requested_plan.save(update_fields=("template",))
         plans = self.group_plans_for(request, source)
         students = self.available_students_for(request)
         form = CourseGroupForm(
@@ -671,9 +733,21 @@ class CoursePlanAdmin(StudentDataAdmin):
             prefix="learning_performances",
         )
         if request.method == "POST" and form.is_valid() and formset.is_valid():
+            overwrite_existing = request.POST.get("action") == "overwrite"
             with transaction.atomic():
-                redirect_plan = self.save_group(form, formset, source, list(plans))
-            self.message_user(request, "課程設定已同步到所有勾選學生；取消勾選者已封存，歷史成績仍保留。", messages.SUCCESS)
+                redirect_plan = self.save_group(
+                    form,
+                    formset,
+                    source,
+                    list(plans),
+                    overwrite_existing=overwrite_existing,
+                )
+            message = (
+                "課程範本已覆蓋所有勾選學生版本。"
+                if overwrite_existing
+                else "課程範本已儲存；新增學生已套用範本，既有學生版本保持不變。"
+            )
+            self.message_user(request, message, messages.SUCCESS)
             return HttpResponseRedirect(reverse("admin:accounts_courseplan_group", args=[redirect_plan.pk]))
         return TemplateResponse(request, "admin/accounts/courseplan/group_form.html", {
             **self.admin_site.each_context(request),

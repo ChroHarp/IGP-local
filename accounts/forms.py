@@ -236,7 +236,7 @@ class CoursePlanForm(forms.ModelForm):
 
     class Meta:
         model = CoursePlan
-        exclude = ("activities", "is_active",)
+        exclude = ("activities", "is_active", "template", "is_template")
 
 
 class CourseGroupForm(CoursePlanForm):

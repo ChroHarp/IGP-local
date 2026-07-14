@@ -74,7 +74,7 @@
       {% if student_plans %}
       <fieldset class="module">
         <h2>學生個別計畫</h2>
-        <p>共同設定儲存後會同步至每位學生；點選學生姓名可再微調該生的課程計畫。</p>
+        <p>範本只會自動套用到新加入的學生；既有學生版本會保留個別調整。</p>
         <div class="student-links">
           {% for plan in student_plans %}
             <a href="{% url 'admin:accounts_courseplan_change' plan.pk %}">{{ plan.semester_plan.igp_plan.student }}</a>
@@ -87,7 +87,7 @@
     <section class="course-tab-panel" id="course-panel-performance" role="tabpanel" aria-labelledby="course-tab-performance" hidden>
       <fieldset class="module">
         <h2>共同學習表現與評量方式</h2>
-        <p>新增條目後，儲存時會同步到所有上課學生的課程計畫。</p>
+        <p>新增條目會套用到新加入的學生；若要更新既有學生，請使用下方覆蓋按鈕。</p>
         {{ formset.management_form }}
         {{ formset.non_form_errors }}
         <table class="performance-table">
@@ -108,7 +108,10 @@
     </section>
 
 
-    <div class="submit-row"><input type="submit" value="儲存並同步課程" class="default"></div>
+    <div class="submit-row">
+      <button type="submit" name="action" value="save" class="default">儲存範本並保留既有學生版本</button>
+      <button type="submit" name="action" value="overwrite">覆蓋所有勾選學生版本</button>
+    </div>
   </form>
 </div>
 <script>

@@ -745,7 +745,15 @@ class PlanCopyActionTests(TestCase):
         self.semester = SemesterPlan.objects.create(
             igp_plan=self.annual, semester=1, learning_domains="mathematics", special_needs_courses="creativity", goals="semester",
         )
-        self.course = CoursePlan.objects.create(semester_plan=self.semester, course_name="Mathematics", goals="course")
+        self.template = CoursePlan.objects.create(
+            semester_plan=self.semester, course_name="Mathematics", goals="course", is_template=True, is_active=False,
+        )
+        self.course = CoursePlan.objects.create(
+            semester_plan=self.semester, template=self.template, course_name="Mathematics", goals="course",
+        )
+        self.template_performance = LearningPerformance.objects.create(
+            course_plan=self.template, description="performance", assessment_methods="written",
+        )
         self.performance = LearningPerformance.objects.create(course_plan=self.course, description="performance", assessment_methods="written")
 
     def test_annual_copy_action_and_course_group_list_render(self):
@@ -855,6 +863,106 @@ class PlanCopyActionTests(TestCase):
             {"science performance"},
         )
 
+    def test_only_lead_can_delete_annual_and_semester_plans(self):
+        from .models import StudentStaffAssignment, Teacher
+
+        case_manager = get_user_model().objects.create_user(
+            username="case-delete", email="case-delete@example.edu.tw", password="safe-test-password",
+            role=get_user_model().Role.CASE_MANAGER, is_approved=True, is_staff=True,
+        )
+        teacher = Teacher.objects.create(full_name="Case Manager", account=case_manager)
+        StudentStaffAssignment.objects.create(
+            student=self.source_student,
+            staff=teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+
+        self.client.force_login(case_manager)
+        self.assertEqual(self.client.get(reverse("admin:accounts_igpplan_delete", args=[self.annual.pk])).status_code, 403)
+        self.assertEqual(self.client.get(reverse("admin:accounts_semesterplan_delete", args=[self.semester.pk])).status_code, 403)
+
+        self.client.force_login(self.lead)
+        self.assertEqual(self.client.get(reverse("admin:accounts_igpplan_delete", args=[self.annual.pk])).status_code, 200)
+        self.assertEqual(self.client.get(reverse("admin:accounts_semesterplan_delete", args=[self.semester.pk])).status_code, 200)
+
+    def test_deleting_template_anchor_reanchors_shared_template(self):
+        from .models import CoursePlan, IGPPlan, SemesterPlan
+
+        target_annual = IGPPlan.objects.create(student=self.target_student, academic_year="115", overall_goal="target")
+        target_semester = SemesterPlan.objects.create(igp_plan=target_annual, semester=1, goals="target")
+        CoursePlan.objects.create(
+            semester_plan=target_semester,
+            template=self.template,
+            course_name="Mathematics",
+            goals="target course",
+        )
+        self.client.force_login(self.lead)
+
+        response = self.client.post(
+            reverse("admin:accounts_igpplan_delete", args=[self.annual.pk]),
+            {"post": "yes"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.semester_plan, target_semester)
+    def test_adding_student_preserves_individual_version_until_explicit_overwrite(self):
+        from .models import CoursePlan, IGPPlan, LearningPerformance, SemesterPlan
+
+        self.client.force_login(self.lead)
+        third_student = Student.objects.create(full_name="Third")
+        target_annual = IGPPlan.objects.create(student=self.target_student, academic_year="115", overall_goal="target")
+        target_semester = SemesterPlan.objects.create(igp_plan=target_annual, semester=1, goals="target semester")
+        target = CoursePlan.objects.create(
+            semester_plan=target_semester,
+            template=self.template,
+            course_name="Mathematics",
+            goals="individual target goal",
+        )
+        target_performance = LearningPerformance.objects.create(
+            course_plan=target,
+            description="individual performance",
+        )
+        prefix = "learning_performances"
+        data = {
+            "academic_year": "115",
+            "semester": 1,
+            "students": [self.source_student.pk, self.target_student.pk, third_student.pk],
+            "course_name": "Mathematics",
+            "teacher": "",
+            "goals": "updated template goal",
+            "learning_domains": [],
+            "special_needs_courses": [],
+            "cognitive_adjustments": [],
+            "affective_support": [],
+            "skill_training": [],
+            f"{prefix}-TOTAL_FORMS": 1,
+            f"{prefix}-INITIAL_FORMS": 1,
+            f"{prefix}-MIN_NUM_FORMS": 0,
+            f"{prefix}-MAX_NUM_FORMS": 1000,
+            f"{prefix}-0-id": self.template_performance.pk,
+            f"{prefix}-0-course_plan": self.template.pk,
+            f"{prefix}-0-description": "updated template performance",
+            f"{prefix}-0-adjustment": "",
+            f"{prefix}-0-assessment_methods": [],
+            "action": "save",
+        }
+
+        self.client.post(reverse("admin:accounts_courseplan_group", args=[self.template.pk]), data)
+        target.refresh_from_db()
+        target_performance.refresh_from_db()
+        added = CoursePlan.objects.get(template=self.template, semester_plan__igp_plan__student=third_student)
+        self.assertEqual(target.goals, "individual target goal")
+        self.assertEqual(target_performance.description, "individual performance")
+        self.assertEqual(added.goals, "updated template goal")
+        self.assertEqual(added.learning_performances.get().description, "updated template performance")
+
+        data["action"] = "overwrite"
+        self.client.post(reverse("admin:accounts_courseplan_group", args=[self.template.pk]), data)
+        target.refresh_from_db()
+        target_performance.refresh_from_db()
+        self.assertEqual(target.goals, "updated template goal")
+        self.assertEqual(target_performance.description, "updated template performance")
     def test_learning_performance_uses_automatic_sequence(self):
         from .models import LearningPerformance
 
@@ -886,8 +994,8 @@ class PlanCopyActionTests(TestCase):
             f"{prefix}-INITIAL_FORMS": 1,
             f"{prefix}-MIN_NUM_FORMS": 0,
             f"{prefix}-MAX_NUM_FORMS": 1000,
-            f"{prefix}-0-id": self.performance.pk,
-            f"{prefix}-0-course_plan": self.course.pk,
+            f"{prefix}-0-id": self.template_performance.pk,
+            f"{prefix}-0-course_plan": self.template.pk,
             f"{prefix}-0-description": "shared performance",
             f"{prefix}-0-adjustment": "shared adjustment",
             f"{prefix}-0-assessment_methods": [],
