@@ -1,4 +1,4 @@
-﻿{% extends "admin/base_site.html" %}
+{% extends "admin/base_site.html" %}
 
 {% block content %}
   <p>先使用「預覽」，確認新增與略過筆數後，再重新選擇同一檔案並按「確認寫入」。系統不會保存上傳的 Excel。</p>
@@ -11,8 +11,10 @@
   {% if result %}
     <h2>結果</h2>
     <ul>
+      <li>資料列：{{ result.row_count }}</li>
       <li>可新增／已新增：{{ result.create_count }}</li>
       <li>略過既有資料：{{ result.skip_count }}</li>
+      <li>錯誤：{{ result.error_count }}</li>
     </ul>
     {% if result.errors %}
       <h3>錯誤</h3>

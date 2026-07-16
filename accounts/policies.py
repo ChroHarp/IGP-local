@@ -1,7 +1,7 @@
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Student, StudentStaffAssignment, User
+from .models import ProgramDocument, Student, StudentStaffAssignment, User
 
 
 STUDENT_DATA_MANAGER_ROLES = {
@@ -81,6 +81,20 @@ def can_view_program_documents(user) -> bool:
             }
         )
     )
+
+
+def program_documents_for(user):
+    if not can_view_program_documents(user):
+        return ProgramDocument.objects.none()
+    if user.is_superuser or user.role == User.Role.SPECIAL_EDUCATION_LEAD:
+        return ProgramDocument.objects.all()
+    return ProgramDocument.objects.filter(
+        Q(student__isnull=True) | Q(student__in=visible_students_for(user))
+    ).distinct()
+
+
+def can_view_program_document(user, document) -> bool:
+    return program_documents_for(user).filter(pk=document.pk).exists()
 
 
 def can_manage_program_documents(user) -> bool:

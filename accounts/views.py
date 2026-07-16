@@ -1,16 +1,16 @@
-﻿from django.contrib.auth.decorators import login_required
+from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 
 from .models import ProgramDocument
-from .policies import can_view_program_documents
+from .policies import can_view_program_document
 
 
 @login_required
 def program_document_download(request, public_id):
     document = get_object_or_404(ProgramDocument, public_id=public_id)
-    if not can_view_program_documents(request.user):
+    if not can_view_program_document(request.user, document):
         raise PermissionDenied
     return FileResponse(
         document.document_file.open("rb"),

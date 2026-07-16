@@ -194,10 +194,19 @@ def private_document_upload_to(instance, filename):
 
 class ProgramDocument(models.Model):
     class DocumentType(models.TextChoices):
+        IGP_PLAN = "igp_plan", "IGP 計畫"
         COURSE_PLAN = "course_plan", "課程計畫"
         TIMETABLE = "timetable", "課表"
 
     public_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    student = models.ForeignKey(
+        "Student",
+        verbose_name="學生",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="program_documents",
+    )
     document_type = models.CharField("文件類型", max_length=24, choices=DocumentType.choices)
     title = models.CharField("文件標題", max_length=150)
     academic_year = models.CharField("學年度", max_length=16, blank=True)

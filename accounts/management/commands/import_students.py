@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -20,7 +20,10 @@ class Command(BaseCommand):
             result = import_basic_students(workbook_file, apply=options["apply"])
         for error in result.errors:
             self.stderr.write(error)
-        self.stdout.write(f"新增：{result.create_count}；略過既有資料：{result.skip_count}。")
+        self.stdout.write(
+            f"資料列：{result.row_count}；新增：{result.create_count}；"
+            f"略過既有資料：{result.skip_count}；錯誤：{result.error_count}。"
+        )
         if result.errors:
             raise CommandError("匯入未執行；請先修正上述錯誤。")
         if not options["apply"]:

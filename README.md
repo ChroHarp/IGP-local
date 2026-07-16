@@ -1,4 +1,4 @@
-﻿# IGP Local
+# IGP Local
 
 Local-first IGP writing and management system for gifted education classes.
 
@@ -57,7 +57,9 @@ Production settings enable HTTPS and HSTS for the configured IGP hostname. Djang
 .\.venv\Scripts\python.exe manage.py import_students "C:\path\students.xlsx" --apply
 ```
 
-Admin 的「課程文件」可上傳課程計畫或課表。只接受 15 MB 以下的 PDF 或 DOCX；檔案不會公開提供，必須登入並通過角色檢查才可下載。課程、個管與導師可閱讀；上傳、修改與刪除限特教組長／主管。
+Admin 的「課程文件」可上傳課程計畫或課表。只接受 15 MB 以下的 PDF 或 DOCX；檔案不會公開提供，必須登入並通過角色檢查才可下載。課程、個管與導師可閱讀一般文件；與學生關聯的 IGP 文件只開放特教組長及該生個管教師。上傳、修改與刪除限特教組長／主管。
+
+在「IGP 年度計畫」開啟個別計畫後，可按「產生 IGP DOCX」。系統會先檢查年度目標、學期計畫、學期目標及課程目標；若有缺漏會列出待補欄位。輸出以去識別化的 `114-7AB-IGP` Word 範本為底，保留原始頁面、表格、合併儲存格、註解與字型，填入學生、家庭、評量、年度分析、課程及輔導紀錄；課程頁數會依實際課程增減。產出的 DOCX 仍可由教師在 Word 中直接編修，並保存為該生的私有文件及留下稽核事件。
 
 ## 在另一台 Windows 電腦建置
 

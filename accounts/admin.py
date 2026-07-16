@@ -1,6 +1,7 @@
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.exceptions import PermissionDenied
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Count, Max, Q
 from django.http import Http404, HttpResponseNotAllowed, HttpResponseRedirect
@@ -9,7 +10,9 @@ from django.shortcuts import get_object_or_404
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
+from django.utils.text import get_valid_filename
 
+from .documents import IGPDocumentError, build_igp_docx
 from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CounselingRecordForm, CourseGroupForm, CourseLearningPerformanceFormSet, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
 from .importers import import_basic_students
 from .models import Assessment, AuditEvent, CounselingRecord, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
@@ -22,7 +25,9 @@ from .policies import (
     can_manage_learning_outcomes,
     students_for_learning_outcomes,
     can_view_learning_outcomes,
+    can_view_program_document,
     can_view_program_documents,
+    program_documents_for,
     can_view_student,
     visible_students_for,
     can_add_counseling_record,
@@ -265,6 +270,7 @@ class StudentDataAdmin(admin.ModelAdmin):
 @admin.register(IGPPlan)
 class IGPPlanAdmin(StudentDataAdmin):
     form = IGPPlanForm
+    change_form_template = "admin/accounts/igpplan/change_form.html"
     fieldsets = (
         ("基本資料", {"fields": ("student", "academic_year", "overall_goal")}),
         ("優勢能力", {"fields": ("cognitive_strengths", "emotional_strengths", "academic_strengths")}),
@@ -307,7 +313,43 @@ class IGPPlanAdmin(StudentDataAdmin):
         return [
             path("bulk/", self.admin_site.admin_view(self.bulk_view), name="accounts_igpplan_bulk"),
             path("<int:plan_id>/copy/", self.admin_site.admin_view(self.copy_view), name="accounts_igpplan_copy"),
+            path("<int:plan_id>/export-docx/", self.admin_site.admin_view(self.export_docx_view), name="accounts_igpplan_export_docx"),
         ] + super().get_urls()
+
+    def export_docx_view(self, request, plan_id):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        plan = get_object_or_404(
+            IGPPlan.objects.select_related("student").filter(
+                student__in=visible_students_for(request.user)
+            ),
+            pk=plan_id,
+        )
+        try:
+            content = build_igp_docx(plan)
+        except IGPDocumentError as exc:
+            self.message_user(request, str(exc), messages.ERROR)
+            return HttpResponseRedirect(reverse("admin:accounts_igpplan_change", args=[plan.pk]))
+
+        filename = get_valid_filename(f"{plan.academic_year}_{plan.student.full_name}_IGP.docx")
+        document = ProgramDocument(
+            student=plan.student,
+            document_type=ProgramDocument.DocumentType.IGP_PLAN,
+            title=f"{plan.academic_year} 學年度 {plan.student.full_name} IGP",
+            academic_year=plan.academic_year,
+            document_file=ContentFile(content, name=filename),
+            uploaded_by=request.user,
+        )
+        document.full_clean()
+        with transaction.atomic():
+            document.save()
+            record_audit_event(
+                actor=request.user,
+                event_type=AuditEvent.EventType.DOCUMENT_UPLOADED,
+                target=document,
+                summary=document.title,
+            )
+        return HttpResponseRedirect(reverse("program-document-download", args=[document.public_id]))
 
     def copy_view(self, request, plan_id):
         if not can_manage_school_settings(request.user):
@@ -1303,7 +1345,7 @@ class StudentStaffAssignmentAdmin(admin.ModelAdmin):
 
 @admin.register(ProgramDocument)
 class ProgramDocumentAdmin(admin.ModelAdmin):
-    list_display = ("title", "document_type", "academic_year", "semester", "uploaded_by", "uploaded_at", "download_link")
+    list_display = ("title", "student", "document_type", "academic_year", "semester", "uploaded_by", "uploaded_at", "download_link")
     list_filter = ("document_type", "academic_year", "semester")
     search_fields = ("title", "original_filename")
     readonly_fields = ("original_filename", "uploaded_by", "uploaded_at", "download_link")
@@ -1322,7 +1364,12 @@ class ProgramDocumentAdmin(admin.ModelAdmin):
     def has_module_permission(self, request):
         return can_view_program_documents(request.user)
 
+    def get_queryset(self, request):
+        return program_documents_for(request.user)
+
     def has_view_permission(self, request, obj=None):
+        if obj:
+            return can_view_program_document(request.user, obj)
         return can_view_program_documents(request.user)
 
     def has_change_permission(self, request, obj=None):

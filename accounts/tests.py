@@ -353,6 +353,20 @@ class BatchImportTests(TestCase):
         self.assertFalse(result.is_valid)
         self.assertFalse(Student.objects.filter(full_name="重複學生").exists())
 
+    def test_import_reports_all_invalid_rows_and_writes_nothing(self):
+        result = import_basic_students(
+            self.workbook([
+                ["日期錯誤", "女", 7, "701", 1, "not-a-date", "家長", ""],
+                ["座號錯誤", "男", 7, "701", -1, date(2013, 1, 1), "家長", ""],
+                ["有效學生", "女", 7, "701", 2, date(2013, 1, 2), "家長", ""],
+            ]),
+            apply=True,
+        )
+
+        self.assertEqual(result.row_count, 3)
+        self.assertEqual(result.error_count, 2)
+        self.assertEqual(result.create_count, 1)
+        self.assertFalse(Student.objects.filter(full_name="有效學生").exists())
 
 class ProgramDocumentTests(TestCase):
     def setUp(self):
@@ -415,6 +429,152 @@ class ProgramDocumentTests(TestCase):
 
 
 
+class PhaseFourDocumentTests(TestCase):
+    def setUp(self):
+        from .models import CoursePlan, IGPPlan, SemesterPlan
+
+        self.document_field = ProgramDocument._meta.get_field("document_file")
+        self.original_storage = self.document_field.storage
+        self.document_field.storage = InMemoryStorage()
+        self.addCleanup(setattr, self.document_field, "storage", self.original_storage)
+        self.lead = get_user_model().objects.create_user(
+            username="phase-four-lead",
+            email="phase-four-lead@example.edu.tw",
+            password="safe-test-password",
+            role=get_user_model().Role.SPECIAL_EDUCATION_LEAD,
+            is_approved=True,
+            is_staff=True,
+        )
+        self.student = Student.objects.create(full_name="文件學生", grade=8, class_name="801", seat_number=3)
+        self.plan = IGPPlan.objects.create(student=self.student, academic_year="115", overall_goal="完成獨立研究")
+        self.semester = SemesterPlan.objects.create(igp_plan=self.plan, semester=1, goals="建立研究方法")
+        CoursePlan.objects.create(
+            semester_plan=self.semester,
+            course_name="專題研究",
+            goals="完成研究問題",
+        )
+
+    def test_docx_contains_igp_content(self):
+        from .documents import build_igp_docx
+
+        content = build_igp_docx(self.plan)
+        with ZipFile(BytesIO(content)) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8")
+            self.assertIn("word/comments.xml", archive.namelist())
+
+        self.assertIn("文件學生", xml)
+        self.assertIn("完成獨立研究", xml)
+        self.assertIn("專題研究", xml)
+        self.assertNotIn("MERGEFIELD", xml)
+
+        from docx import Document
+
+        document = Document(BytesIO(content))
+        course_tables = [
+            table for table in document.tables
+            if table.cell(0, 0).text.strip() == "學習領域"
+        ]
+        self.assertEqual(len(course_tables), 1)
+        self.assertEqual(len(document.tables), 18)
+
+    def test_docx_adds_course_pages_beyond_the_six_template_slots(self):
+        from docx import Document
+
+        from .documents import build_igp_docx
+        from .models import CoursePlan
+
+        for index in range(6):
+            CoursePlan.objects.create(
+                semester_plan=self.semester,
+                course_name=f"加開課程 {index + 1}",
+                goals="課程目標",
+            )
+
+        document = Document(BytesIO(build_igp_docx(self.plan)))
+        course_tables = [
+            table for table in document.tables
+            if table.cell(0, 0).text.strip() == "學習領域"
+        ]
+
+        self.assertEqual(len(course_tables), 7)
+        self.assertIn("加開課程 6", {table.cell(0, 3).text for table in course_tables})
+    def test_export_requires_a_semester_plan(self):
+        from .documents import IGPDocumentError, build_igp_docx
+        from .models import IGPPlan
+
+        incomplete = IGPPlan.objects.create(
+            student=Student.objects.create(full_name="缺漏學生"),
+            academic_year="115",
+            overall_goal="年度目標",
+        )
+
+        with self.assertRaisesRegex(IGPDocumentError, "至少一份學期計畫"):
+            build_igp_docx(incomplete)
+
+    def test_admin_export_saves_private_document_and_audit_event(self):
+        from .models import AuditEvent
+
+        self.client.force_login(self.lead)
+        response = self.client.post(
+            reverse("admin:accounts_igpplan_export_docx", args=[self.plan.pk])
+        )
+
+        document = ProgramDocument.objects.get(document_type=ProgramDocument.DocumentType.IGP_PLAN)
+        self.assertRedirects(
+            response,
+            reverse("program-document-download", args=[document.public_id]),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(document.student, self.student)
+        self.assertTrue(
+            AuditEvent.objects.filter(
+                event_type=AuditEvent.EventType.DOCUMENT_UPLOADED,
+                target_pk=str(document.pk),
+            ).exists()
+        )
+        self.assertEqual(
+            self.client.get(reverse("program-document-download", args=[document.public_id])).status_code,
+            200,
+        )
+
+    def test_student_document_follows_case_manager_assignment(self):
+        document = ProgramDocument.objects.create(
+            student=self.student,
+            document_type=ProgramDocument.DocumentType.IGP_PLAN,
+            title="受限 IGP",
+            document_file=SimpleUploadedFile("igp.docx", self._minimal_docx()),
+        )
+        case_manager = get_user_model().objects.create_user(
+            username="unassigned-case-manager",
+            email="unassigned-case-manager@example.edu.tw",
+            password="safe-test-password",
+            role=get_user_model().Role.CASE_MANAGER,
+            is_approved=True,
+            is_staff=True,
+        )
+        self.client.force_login(case_manager)
+
+        response = self.client.get(reverse("program-document-download", args=[document.public_id]))
+
+        self.assertEqual(response.status_code, 403)
+
+        teacher = Teacher.objects.create(full_name="文件個管教師", account=case_manager)
+        StudentStaffAssignment.objects.create(
+            student=self.student,
+            staff=teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        self.assertEqual(
+            self.client.get(reverse("program-document-download", args=[document.public_id])).status_code,
+            200,
+        )
+
+    @staticmethod
+    def _minimal_docx():
+        data = BytesIO()
+        with ZipFile(data, "w") as archive:
+            archive.writestr("word/document.xml", "<w:document />")
+        return data.getvalue()
 
 class TeacherAssignmentBoardTests(TestCase):
     def setUp(self):

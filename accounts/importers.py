@@ -1,9 +1,11 @@
-﻿from dataclasses import dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import BinaryIO
+from zipfile import BadZipFile
 
 from django.db import transaction
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from .models import AwardRecord, FamilyMember, Guardian, InitialIGPProfile, Student
 
@@ -14,6 +16,7 @@ class StudentImportError(ValueError):
 
 @dataclass
 class StudentImportResult:
+    row_count: int = 0
     create_count: int = 0
     skip_count: int = 0
     errors: list[str] = field(default_factory=list)
@@ -21,6 +24,10 @@ class StudentImportResult:
     @property
     def is_valid(self):
         return not self.errors
+
+    @property
+    def error_count(self):
+        return len(self.errors)
 
 
 HEADER_ALIASES = {
@@ -222,7 +229,10 @@ def cell(row, indexes, field):
 
 
 def parse_students(workbook_file: BinaryIO):
-    workbook = load_workbook(workbook_file, read_only=True, data_only=True)
+    try:
+        workbook = load_workbook(workbook_file, read_only=True, data_only=True)
+    except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
+        raise StudentImportError("Excel 檔案格式不正確或已損毀。") from exc
     worksheet = workbook.active
     rows = worksheet.iter_rows(values_only=True)
     try:
@@ -232,30 +242,33 @@ def parse_students(workbook_file: BinaryIO):
         raise StudentImportError("Excel 沒有資料列。") from exc
 
     parsed = []
+    errors = []
     for row_number, row in enumerate(rows, start=2):
         full_name = normalize_text(cell(row, indexes, "full_name"))
         if not full_name:
             continue
-        parsed.append({
-            "row_number": row_number,
-            "student_number": normalize_text(cell(row, indexes, "student_number")) or None,
-            "full_name": full_name,
-            "gender": as_gender(cell(row, indexes, "gender")),
-            "has_multiple_special_education_needs": as_bool(cell(row, indexes, "multiple_needs")),
-            "date_of_birth": as_date(cell(row, indexes, "date_of_birth")),
-            "grade": as_int(cell(row, indexes, "grade"), "年級"),
-            "class_name": normalize_text(cell(row, indexes, "class_name")),
-            "seat_number": as_int(cell(row, indexes, "seat_number"), "座號"),
-            "email": normalize_text(cell(row, indexes, "email")),
-            "home_phone": normalize_text(cell(row, indexes, "home_phone")),
-            "address": normalize_text(cell(row, indexes, "address")),
-            "guardian_name": normalize_text(cell(row, indexes, "guardian_name")),
-            "guardian_work": normalize_text(cell(row, indexes, "guardian_work")),
-            "guardian_mobile": normalize_text(cell(row, indexes, "guardian_mobile")),
-            "raw_response": raw_response(headers, row),
-        })
-    return parsed
-
+        try:
+            parsed.append({
+                "row_number": row_number,
+                "student_number": normalize_text(cell(row, indexes, "student_number")) or None,
+                "full_name": full_name,
+                "gender": as_gender(cell(row, indexes, "gender")),
+                "has_multiple_special_education_needs": as_bool(cell(row, indexes, "multiple_needs")),
+                "date_of_birth": as_date(cell(row, indexes, "date_of_birth")),
+                "grade": as_int(cell(row, indexes, "grade"), "年級"),
+                "class_name": normalize_text(cell(row, indexes, "class_name")),
+                "seat_number": as_int(cell(row, indexes, "seat_number"), "座號"),
+                "email": normalize_text(cell(row, indexes, "email")),
+                "home_phone": normalize_text(cell(row, indexes, "home_phone")),
+                "address": normalize_text(cell(row, indexes, "address")),
+                "guardian_name": normalize_text(cell(row, indexes, "guardian_name")),
+                "guardian_work": normalize_text(cell(row, indexes, "guardian_work")),
+                "guardian_mobile": normalize_text(cell(row, indexes, "guardian_mobile")),
+                "raw_response": raw_response(headers, row),
+            })
+        except StudentImportError as exc:
+            errors.append(f"第 {row_number} 列：{exc}")
+    return parsed, errors
 
 def existing_student(data):
     if data["student_number"]:
@@ -269,10 +282,13 @@ def existing_student(data):
 def import_basic_students(workbook_file: BinaryIO, *, apply=False):
     result = StudentImportResult()
     try:
-        parsed = parse_students(workbook_file)
+        parsed, parse_errors = parse_students(workbook_file)
     except StudentImportError as exc:
         result.errors.append(str(exc))
         return result
+
+    result.row_count = len(parsed) + len(parse_errors)
+    result.errors.extend(parse_errors)
 
     pending = []
     seen_identities = set()
