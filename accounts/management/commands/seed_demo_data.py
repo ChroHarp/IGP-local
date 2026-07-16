@@ -1,11 +1,15 @@
 from datetime import date
 
+from django.utils import timezone
+
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from accounts.models import (
     Assessment,
+    AuditEvent,
+    CounselingRecord,
     AwardRecord,
     CoursePlan,
     FamilyMember,
@@ -184,7 +188,7 @@ class Command(BaseCommand):
                 )
                 for course_name, teacher_username, goal in courses:
                     course, _ = CoursePlan.objects.get_or_create(
-                        semester_plan=semester, course_name=course_name,
+                        semester_plan=semester, course_name=course_name, is_template=False,
                         defaults={
                             "teacher": teachers[teacher_username], "goals": goal,
                             "activities": "小組討論、實作實驗與口頭發表。",
@@ -208,5 +212,46 @@ class Command(BaseCommand):
                         defaults={"outcome": "完成示範專題階段成果並進行分享。", "reflection": "下階段將強化資料整理與論證。"},
                     )
 
+            counseling_specs = (
+                ("DEMO-701-01", "demo-case-a", "個管初談（草稿）", "了解近期學習安排與適應情形。", CounselingRecord.Status.DRAFT),
+                ("DEMO-701-02", "demo-case-a", "個管追蹤（已送審）", "追蹤作業規劃與時間管理。", CounselingRecord.Status.SUBMITTED),
+                ("DEMO-701-01", "demo-homeroom", "導師觀察（草稿）", "記錄班級參與與同儕互動情形。", CounselingRecord.Status.DRAFT),
+                ("DEMO-701-01", "demo-math", "數學課觀察（退回修正）", "記錄解題活動中的參與表現。", CounselingRecord.Status.RETURNED),
+                ("DEMO-701-02", "demo-math", "數學課追蹤（已審核）", "記錄延伸任務的完成情形。", CounselingRecord.Status.REVIEWED),
+                ("DEMO-702-01", "demo-case-b", "個管結案紀錄（已鎖定）", "完成本階段目標檢核與後續建議。", CounselingRecord.Status.LOCKED),
+            )
+            for student_number, username, subject, content, status in counseling_specs:
+                record, _ = CounselingRecord.objects.get_or_create(
+                    student=students[student_number], author=users[username], event=subject,
+                    defaults={"academic_year": ACADEMIC_YEAR, "recorded_on": date(2026, 10, 15), "summary": content},
+                )
+                record.academic_year = ACADEMIC_YEAR
+                record.participants = "本人、家長、個管老師"
+                record.summary = content
+                record.intervention = "定期晤談、持續觀察、其他：視需要安排個別輔導"
+                record.review_note = "建議持續追蹤。" if status in {CounselingRecord.Status.REVIEWED, CounselingRecord.Status.LOCKED} else ""
+                record.status = status
+                record.submitted_at = timezone.now() if status != CounselingRecord.Status.DRAFT else None
+                record.reviewed_by = users["demo-lead"] if status in {CounselingRecord.Status.REVIEWED, CounselingRecord.Status.LOCKED} else None
+                record.reviewed_at = timezone.now() if record.reviewed_by else None
+                record.locked_by = users["demo-lead"] if status == CounselingRecord.Status.LOCKED else None
+                record.locked_at = timezone.now() if record.locked_by else None
+                record.save()
+                event_types = [AuditEvent.EventType.COUNSELING_CREATED]
+                if status in {CounselingRecord.Status.SUBMITTED, CounselingRecord.Status.RETURNED, CounselingRecord.Status.REVIEWED, CounselingRecord.Status.LOCKED}:
+                    event_types.append(AuditEvent.EventType.COUNSELING_SUBMITTED)
+                if status == CounselingRecord.Status.RETURNED:
+                    event_types.append(AuditEvent.EventType.COUNSELING_RETURNED)
+                if status in {CounselingRecord.Status.REVIEWED, CounselingRecord.Status.LOCKED}:
+                    event_types.append(AuditEvent.EventType.COUNSELING_REVIEWED)
+                if status == CounselingRecord.Status.LOCKED:
+                    event_types.append(AuditEvent.EventType.COUNSELING_LOCKED)
+                for event_type in event_types:
+                    actor = users["demo-lead"] if event_type in {AuditEvent.EventType.COUNSELING_RETURNED, AuditEvent.EventType.COUNSELING_REVIEWED, AuditEvent.EventType.COUNSELING_LOCKED} else users[username]
+                    AuditEvent.objects.get_or_create(
+                        actor=actor, event_type=event_type,
+                        target_model="accounts.counselingrecord", target_pk=str(record.pk),
+                        defaults={"summary": record.event},
+                    )
         self.stdout.write(self.style.SUCCESS("DEMO 測試資料已建立或更新。"))
         self.stdout.write(f"所有 DEMO 帳號密碼：{DEMO_PASSWORD}")

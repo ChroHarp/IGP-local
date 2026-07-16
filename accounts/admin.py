@@ -2,7 +2,7 @@ from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, Max, Q
 from django.http import Http404, HttpResponseNotAllowed, HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.shortcuts import get_object_or_404
@@ -10,9 +10,9 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 
-from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CourseGroupForm, CourseLearningPerformanceFormSet, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
+from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CounselingRecordForm, CourseGroupForm, CourseLearningPerformanceFormSet, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
 from .importers import import_basic_students
-from .models import Assessment, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
+from .models import Assessment, AuditEvent, CounselingRecord, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 from .policies import (
     can_add_student,
     can_edit_student,
@@ -25,7 +25,13 @@ from .policies import (
     can_view_program_documents,
     can_view_student,
     visible_students_for,
-)
+    can_add_counseling_record,
+    can_edit_counseling_record,
+    can_review_counseling_records,
+    counseling_records_for,
+    students_for_counseling_authoring,
+    students_for_counseling_index,
+    students_for_course_plans,)
 
 admin.site.site_header = "IGP 本地管理"
 admin.site.site_title = "IGP 本地管理"
@@ -60,7 +66,7 @@ def get_grouped_app_list(request, app_label=None):
     accounts_app = next((app for app in app_list if app["app_label"] == "accounts"), None)
     if not accounts_app:
         return app_list
-    igp_models = {"igpplan", "semesterplan", "courseplan", "learningoutcomerating"}
+    igp_models = {"igpplan", "semesterplan", "courseplan", "learningoutcomerating", "counselingrecord"}
     models = [model for model in accounts_app["models"] if model["object_name"].lower() in igp_models]
     if not models:
         return app_list
@@ -511,6 +517,26 @@ class CoursePlanAdmin(StudentDataAdmin):
         "special_needs_courses", "cognitive_adjustments", "affective_support", "skill_training",
     )
 
+    def get_queryset(self, request):
+        return admin.ModelAdmin.get_queryset(self, request).filter(
+            semester_plan__igp_plan__student__in=students_for_course_plans(request.user)
+        )
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "semester_plan":
+            kwargs["queryset"] = SemesterPlan.objects.filter(
+                igp_plan__student__in=students_for_course_plans(request.user)
+            )
+        return admin.ModelAdmin.formfield_for_foreignkey(self, db_field, request, **kwargs)
+
+    def has_module_permission(self, request):
+        return students_for_course_plans(request.user).exists()
+
+    def has_view_permission(self, request, obj=None):
+        if obj is None:
+            return self.has_module_permission(request)
+        student = obj.semester_plan.igp_plan.student
+        return students_for_course_plans(request.user).filter(pk=student.pk).exists()
     class Media:
         css = {"all": ("admin/accounts/parent_child_checkboxes.css",)}
         js = ("admin/accounts/parent_child_checkboxes.js",)
@@ -698,7 +724,7 @@ class CoursePlanAdmin(StudentDataAdmin):
         return active_plans[0]
 
     def group_view(self, request, plan_id):
-        visible_students = visible_students_for(request.user)
+        visible_students = students_for_course_plans(request.user)
         requested_plan = get_object_or_404(
             CoursePlan.objects.select_related("template", "semester_plan__igp_plan__student").filter(
                 Q(pk=plan_id, is_template=False, semester_plan__igp_plan__student__in=visible_students)
@@ -706,6 +732,8 @@ class CoursePlanAdmin(StudentDataAdmin):
             ).distinct()
         )
         source = requested_plan.template or requested_plan
+        if request.method == "POST" and not can_edit_student(request.user, requested_plan.semester_plan.igp_plan.student):
+            raise PermissionDenied
         if not source.is_template:
             values = {field: getattr(source, field) for field in self.shared_fields}
             with transaction.atomic():
@@ -929,6 +957,218 @@ class LearningOutcomeRatingAdmin(admin.ModelAdmin):
         return False
 
 
+
+def record_audit_event(*, actor, event_type, target, summary=""):
+    AuditEvent.objects.create(
+        actor=actor,
+        event_type=event_type,
+        target_model=target._meta.label_lower,
+        target_pk=str(target.pk),
+        summary=summary[:255],
+    )
+
+
+@admin.register(CounselingRecord)
+class CounselingRecordAdmin(admin.ModelAdmin):
+    form = CounselingRecordForm
+    change_list_template = "admin/accounts/counselingrecord/change_list.html"
+    list_display = ("recorded_on", "participants", "event", "summary_brief", "intervention_brief", "author", "status")
+    list_display_links = ("recorded_on", "event")
+    list_filter = ("status", "academic_year", "recorded_on")
+    search_fields = ("student__full_name", "event", "summary", "intervention", "author__username")
+    readonly_fields = ("author", "status", "review_note", "submitted_at", "reviewed_by", "reviewed_at", "locked_by", "locked_at", "created_at", "updated_at")
+    actions = ("submit_selected", "return_selected", "review_selected", "lock_selected")
+    fieldsets = (
+        ("輔導紀錄", {"fields": ("student", "academic_year", "recorded_on", "participants", "participants_other", "event", "summary", "intervention", "intervention_other", "author")}),
+        ("審核", {"fields": ("status", "review_note", "submitted_at", "reviewed_by", "reviewed_at", "locked_by", "locked_at")}),
+        ("系統資訊", {"fields": ("created_at", "updated_at"), "classes": ("collapse",)}),
+    )
+
+    def get_urls(self):
+        return [
+            path(
+                "student/<int:student_id>/",
+                self.admin_site.admin_view(self.student_records_view),
+                name="accounts_counselingrecord_student_records",
+            ),
+        ] + super().get_urls()
+
+    @admin.display(description="內容概要敘述")
+    def summary_brief(self, obj):
+        return obj.summary if len(obj.summary) <= 80 else f"{obj.summary[:80]}…"
+
+    @admin.display(description="處遇方式")
+    def intervention_brief(self, obj):
+        return obj.intervention if len(obj.intervention) <= 80 else f"{obj.intervention[:80]}…"
+
+    def changelist_view(self, request, extra_context=None):
+        if not self.has_module_permission(request):
+            raise PermissionDenied
+        records = counseling_records_for(request.user)
+        students = students_for_counseling_index(request.user).annotate(
+            visible_record_count=Count(
+                "counseling_records",
+                filter=Q(counseling_records__in=records),
+                distinct=True,
+            ),
+            latest_recorded_on=Max(
+                "counseling_records__recorded_on",
+                filter=Q(counseling_records__in=records),
+            ),
+        )
+        student_rows = [(student, can_add_counseling_record(request.user, student)) for student in students]
+        return TemplateResponse(request, "admin/accounts/counselingrecord/student_list.html", {
+            **self.admin_site.each_context(request),
+            "title": "輔導紀錄－選擇學生",
+            "opts": self.model._meta,
+            "student_rows": student_rows,
+        })
+
+    def student_records_view(self, request, student_id):
+        student = get_object_or_404(students_for_counseling_index(request.user), pk=student_id)
+        return super().changelist_view(request, {
+            "title": f"{student.full_name}－輔導紀錄",
+            "current_student": student,
+            "can_add_for_student": can_add_counseling_record(request.user, student),
+        })
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "student":
+            kwargs["queryset"] = students_for_counseling_authoring(request.user)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def get_queryset(self, request):
+        queryset = counseling_records_for(request.user).select_related("student", "author", "reviewed_by", "locked_by")
+        student_id = request.resolver_match.kwargs.get("student_id") if request.resolver_match else None
+        return queryset.filter(student_id=student_id) if student_id else queryset
+
+    def get_changeform_initial_data(self, request):
+        initial = super().get_changeform_initial_data(request)
+        student_id = request.GET.get("student")
+        if student_id and students_for_counseling_authoring(request.user).filter(pk=student_id).exists():
+            initial["student"] = student_id
+        return initial
+
+    def get_exclude(self, request, obj=None):
+        return ("author", "status", "submitted_at", "reviewed_by", "reviewed_at", "locked_by", "locked_at")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and can_review_counseling_records(request.user) and obj.status == CounselingRecord.Status.SUBMITTED:
+            return tuple(field.name for field in self.model._meta.fields if field.name != "review_note")
+        if obj and not can_edit_counseling_record(request.user, obj):
+            return tuple(field.name for field in self.model._meta.fields)
+        return self.readonly_fields
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            if not can_add_counseling_record(request.user, obj.student):
+                raise PermissionDenied
+            obj.author = request.user
+            if not obj.academic_year:
+                obj.academic_year = current_academic_year()
+        super().save_model(request, obj, form, change)
+        if not change:
+            record_audit_event(
+                actor=request.user,
+                event_type=AuditEvent.EventType.COUNSELING_CREATED,
+                target=obj,
+                summary=f"{obj.student}：{obj.event}",
+            )
+
+    def has_module_permission(self, request):
+        return counseling_records_for(request.user).exists() or can_add_counseling_record(request.user)
+
+    def has_view_permission(self, request, obj=None):
+        if obj is None:
+            return self.has_module_permission(request)
+        return counseling_records_for(request.user).filter(pk=obj.pk).exists()
+
+    def has_add_permission(self, request):
+        return can_add_counseling_record(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        if obj is None:
+            return self.has_module_permission(request)
+        return can_edit_counseling_record(request.user, obj) or (
+            can_review_counseling_records(request.user) and obj.status == CounselingRecord.Status.SUBMITTED
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="送審選取的輔導紀錄")
+    def submit_selected(self, request, queryset):
+        eligible = queryset.filter(author=request.user, status__in=(CounselingRecord.Status.DRAFT, CounselingRecord.Status.RETURNED))
+        with transaction.atomic():
+            for record in eligible.select_for_update():
+                record.status = CounselingRecord.Status.SUBMITTED
+                record.submitted_at = timezone.now()
+                record.save(update_fields=("status", "submitted_at", "updated_at"))
+                record_audit_event(actor=request.user, event_type=AuditEvent.EventType.COUNSELING_SUBMITTED, target=record, summary=record.event)
+        self.message_user(request, f"已送審 {eligible.count()} 筆輔導紀錄。", messages.SUCCESS)
+
+    @admin.action(description="退回選取的輔導紀錄")
+    def return_selected(self, request, queryset):
+        if not can_review_counseling_records(request.user):
+            raise PermissionDenied
+        eligible = queryset.filter(status=CounselingRecord.Status.SUBMITTED)
+        with transaction.atomic():
+            for record in eligible.select_for_update():
+                record.status = CounselingRecord.Status.RETURNED
+                record.save(update_fields=("status", "updated_at"))
+                record_audit_event(actor=request.user, event_type=AuditEvent.EventType.COUNSELING_RETURNED, target=record, summary=record.event)
+        self.message_user(request, f"已退回 {eligible.count()} 筆輔導紀錄。", messages.SUCCESS)
+
+    @admin.action(description="審核選取的輔導紀錄")
+    def review_selected(self, request, queryset):
+        if not can_review_counseling_records(request.user):
+            raise PermissionDenied
+        eligible = queryset.filter(status=CounselingRecord.Status.SUBMITTED)
+        with transaction.atomic():
+            for record in eligible.select_for_update():
+                record.status = CounselingRecord.Status.REVIEWED
+                record.reviewed_by = request.user
+                record.reviewed_at = timezone.now()
+                record.save(update_fields=("status", "reviewed_by", "reviewed_at", "updated_at"))
+                record_audit_event(actor=request.user, event_type=AuditEvent.EventType.COUNSELING_REVIEWED, target=record, summary=record.event)
+        self.message_user(request, f"已審核 {eligible.count()} 筆輔導紀錄。", messages.SUCCESS)
+
+    @admin.action(description="鎖定選取的輔導紀錄")
+    def lock_selected(self, request, queryset):
+        if not can_review_counseling_records(request.user):
+            raise PermissionDenied
+        eligible = queryset.filter(status=CounselingRecord.Status.REVIEWED)
+        with transaction.atomic():
+            for record in eligible.select_for_update():
+                record.status = CounselingRecord.Status.LOCKED
+                record.locked_by = request.user
+                record.locked_at = timezone.now()
+                record.save(update_fields=("status", "locked_by", "locked_at", "updated_at"))
+                record_audit_event(actor=request.user, event_type=AuditEvent.EventType.COUNSELING_LOCKED, target=record, summary=record.event)
+        self.message_user(request, f"已鎖定 {eligible.count()} 筆輔導紀錄。", messages.SUCCESS)
+
+
+@admin.register(AuditEvent)
+class AuditEventAdmin(admin.ModelAdmin):
+    list_display = ("occurred_at", "event_type", "actor", "target_model", "target_pk", "summary")
+    list_filter = ("event_type", "occurred_at")
+    search_fields = ("actor__username", "target_model", "target_pk", "summary")
+    readonly_fields = ("occurred_at", "actor", "event_type", "target_model", "target_pk", "summary")
+
+    def has_module_permission(self, request):
+        return can_manage_school_settings(request.user)
+
+    def has_view_permission(self, request, obj=None):
+        return can_manage_school_settings(request.user)
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 @admin.register(SchoolSetting)
 class SchoolSettingAdmin(admin.ModelAdmin):
     list_display = ("name", "academic_year", "updated_at")

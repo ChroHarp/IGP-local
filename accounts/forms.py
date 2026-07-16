@@ -7,7 +7,7 @@ from django.db.models import Q
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
-from .models import CoursePlan, IGPPlan, InitialIGPProfile, LearningPerformance, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
+from .models import CounselingRecord, CoursePlan, IGPPlan, InitialIGPProfile, LearningPerformance, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 
 
 def split_choices(value):
@@ -111,6 +111,7 @@ class TeacherStudentAssignmentForm(forms.Form):
 
     def __init__(self, *args, teacher=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.teacher = teacher
         students = Student.objects.filter(is_active=True)
         for _, field_name in self.assignment_fields:
             self.fields[field_name].queryset = students
@@ -118,6 +119,25 @@ class TeacherStudentAssignmentForm(forms.Form):
         if teacher:
             accounts = accounts.filter(Q(teacher_profile__isnull=True) | Q(teacher_profile=teacher))
         self.fields["account"].queryset = accounts.order_by("email", "username")
+
+    def clean_case_manager_students(self):
+        students = self.cleaned_data["case_manager_students"]
+        if not self.teacher:
+            return students
+
+        conflicts = StudentStaffAssignment.objects.filter(
+            student__in=students,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+            is_active=True,
+            end_date__isnull=True,
+        ).exclude(staff=self.teacher).select_related("student", "staff")
+        if conflicts.exists():
+            details = "；".join(
+                f"{assignment.student.full_name} 已是 {assignment.staff.full_name} 的個案"
+                for assignment in conflicts
+            )
+            raise forms.ValidationError(f"無法指派個管教師：{details}。請先解除原個管指派。")
+        return students
 
 
 class TeacherCreateForm(forms.ModelForm):
@@ -304,3 +324,55 @@ class CopyCoursePlanForm(CopySemesterPlanForm):
     def __init__(self, *args, semester=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["semester"].initial = semester
+class CounselingRecordForm(forms.ModelForm):
+    PARTICIPANTS = ("本人", "家長", "原班導師", "個管老師", "資優任課")
+    INTERVENTIONS = ("轉介二級", "協同導師", "定期晤談", "持續觀察")
+    participants = TagMultipleChoiceField(
+        label="參與人員",
+        required=False,
+        choices=[(choice, choice) for choice in PARTICIPANTS],
+        widget=forms.CheckboxSelectMultiple,
+    )
+    participants_other = forms.CharField(label="其他參與人員", max_length=150, required=False)
+    intervention = TagMultipleChoiceField(
+        label="處遇方式",
+        required=False,
+        choices=[(choice, choice) for choice in INTERVENTIONS],
+        widget=forms.CheckboxSelectMultiple,
+    )
+    intervention_other = forms.CharField(label="其他處遇方式", max_length=150, required=False)
+
+    class Meta:
+        model = CounselingRecord
+        fields = ("student", "academic_year", "recorded_on", "participants", "event", "summary", "intervention", "review_note")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        values = split_choices(self.instance.participants if self.instance.pk else self.initial.get("participants", ""))
+        selected = [value for value in values if value in self.PARTICIPANTS]
+        other_values = [value.removeprefix("其他：") for value in values if value not in self.PARTICIPANTS]
+        if other_values:
+            self.initial["participants_other"] = "、".join(other_values)
+        self.initial["participants"] = selected
+
+        intervention_values = split_choices(self.instance.intervention if self.instance.pk else self.initial.get("intervention", ""))
+        selected_interventions = [value for value in intervention_values if value in self.INTERVENTIONS]
+        other_interventions = [value.removeprefix("其他：") for value in intervention_values if value not in self.INTERVENTIONS]
+        if other_interventions:
+            self.initial["intervention_other"] = "、".join(other_interventions)
+        self.initial["intervention"] = selected_interventions
+
+    def clean(self):
+        cleaned_data = super().clean()
+        participants = split_choices(cleaned_data.get("participants", ""))
+        participants_other = cleaned_data.get("participants_other", "").strip()
+        if participants_other:
+            participants.append(f"其他：{participants_other}")
+        cleaned_data["participants"] = "、".join(participants)
+
+        interventions = split_choices(cleaned_data.get("intervention", ""))
+        intervention_other = cleaned_data.get("intervention_other", "").strip()
+        if intervention_other:
+            interventions.append(f"其他：{intervention_other}")
+        cleaned_data["intervention"] = "、".join(interventions)
+        return cleaned_data

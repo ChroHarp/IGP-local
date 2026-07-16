@@ -1,4 +1,4 @@
-﻿{% extends "admin/base_site.html" %}
+{% extends "admin/base_site.html" %}
 {% block content %}
 <div id="content-main">
   <h1>{{ title }}</h1>
@@ -12,7 +12,10 @@
     </fieldset>
     <fieldset class="module aligned">
       <h2>個管教師</h2>
-      <div class="form-row"><div><label>{{ form.case_manager_students.label }}：</label>{{ form.case_manager_students }}</div></div>
+      <div class="form-row"><div>
+  <label>{{ form.case_manager_students.label }}：</label>{{ form.case_manager_students }}
+  {% if form.case_manager_students.errors %}{{ form.case_manager_students.errors }}{% endif %}
+</div></div>
     </fieldset>
     <fieldset class="module aligned">
       <h2>任課學生（由課程計畫自動帶入）</h2>

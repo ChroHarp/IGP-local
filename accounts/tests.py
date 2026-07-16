@@ -1,4 +1,4 @@
-﻿from datetime import date, timedelta
+from datetime import date, timedelta
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -469,6 +469,33 @@ class TeacherAssignmentBoardTests(TestCase):
         self.assertFalse(StudentStaffAssignment.objects.get(student=self.second_student, role=StudentStaffAssignment.Role.HOMEROOM_TEACHER).is_active)
         self.assertTrue(active.get(student=self.second_student, role=StudentStaffAssignment.Role.CASE_MANAGER).is_active)
 
+    def test_case_manager_assignment_shows_validation_error_when_student_already_has_one(self):
+        other_account = get_user_model().objects.create_user(
+            username="other-case-manager", email="other-case-manager@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.CASE_MANAGER,
+            is_approved=True, is_staff=True,
+        )
+        other_teacher = Teacher.objects.create(full_name="既有個管教師", account=other_account)
+        StudentStaffAssignment.objects.create(
+            student=self.first_student,
+            staff=other_teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        self.client.force_login(self.lead)
+
+        response = self.client.post(self.url, {
+            "account": self.teacher_account.pk,
+            "case_manager_students": [self.first_student.pk],
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "第一位學生 已是 既有個管教師 的個案")
+        self.assertFalse(StudentStaffAssignment.objects.filter(
+            student=self.first_student,
+            staff=self.teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+            is_active=True,
+        ).exists())
     def test_course_students_cannot_be_assigned_from_teacher_board(self):
         self.client.force_login(self.lead)
 
@@ -1029,3 +1056,332 @@ class PlanCopyActionTests(TestCase):
         self.assertEqual(archive_response.status_code, 302)
         self.assertFalse(target.is_active)
         self.assertTrue(LearningOutcomeRating.objects.filter(pk=rating.pk).exists())
+
+
+class CounselingRecordWorkflowTests(TestCase):
+    def setUp(self):
+        self.lead = get_user_model().objects.create_user(
+            username="counseling-lead", email="counseling-lead@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.SPECIAL_EDUCATION_LEAD,
+            is_approved=True, is_staff=True,
+        )
+        self.case_manager = get_user_model().objects.create_user(
+            username="counseling-case", email="counseling-case@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.CASE_MANAGER,
+            is_approved=True, is_staff=True,
+        )
+        self.hidden_case_manager = get_user_model().objects.create_user(
+            username="other-case", email="other-case@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.CASE_MANAGER,
+            is_approved=True, is_staff=True,
+        )
+        self.student = Student.objects.create(full_name="輔導學生")
+        self.hidden_student = Student.objects.create(full_name="不可見輔導學生")
+        teacher = Teacher.objects.create(full_name="個管教師", account=self.case_manager)
+        StudentStaffAssignment.objects.create(
+            student=self.student, staff=teacher, role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        self.list_url = reverse("admin:accounts_counselingrecord_changelist")
+
+    def records_url(self, student):
+        return reverse("admin:accounts_counselingrecord_student_records", args=[student.pk])
+
+    def create_record(self):
+        self.client.force_login(self.case_manager)
+        response = self.client.post(reverse("admin:accounts_counselingrecord_add"), {
+            "student": self.student.pk,
+            "academic_year": "115",
+            "recorded_on": "2026-07-15",
+            "event": "學習適應",
+            "summary": "與學生討論學習安排。",
+            "_save": "儲存",
+        })
+        self.assertEqual(response.status_code, 302)
+        from .models import CounselingRecord
+        return CounselingRecord.objects.get()
+
+    def run_action(self, user, action, record):
+        self.client.force_login(user)
+        return self.client.post(self.records_url(record.student), {
+            "action": action,
+            "_selected_action": [record.pk],
+        })
+
+    def test_case_manager_can_create_and_only_view_assigned_student_records(self):
+        record = self.create_record()
+        from .models import CounselingRecord
+        CounselingRecord.objects.create(
+            student=self.hidden_student, author=self.hidden_case_manager,
+            event="不可見", summary="不應出現。",
+        )
+
+        self.client.force_login(self.case_manager)
+        student_list = self.client.get(self.list_url)
+        record_list = self.client.get(self.records_url(self.student))
+        hidden_list = self.client.get(self.records_url(self.hidden_student))
+
+        self.assertEqual(student_list.status_code, 200)
+        self.assertContains(student_list, self.student.full_name)
+        self.assertNotContains(student_list, self.hidden_student.full_name)
+        self.assertEqual(record_list.status_code, 200)
+        for heading in ("日期", "參與人員", "事件", "內容概要敘述", "處遇方式", "記錄人員"):
+            self.assertContains(record_list, heading)
+        self.assertContains(record_list, record.event)
+        self.assertContains(record_list, reverse("admin:accounts_counselingrecord_change", args=[record.pk]))
+        self.assertEqual(hidden_list.status_code, 404)
+    def test_submit_return_review_and_lock_create_audit_events(self):
+        record = self.create_record()
+        from .models import AuditEvent, CounselingRecord
+
+        self.assertEqual(record.status, CounselingRecord.Status.DRAFT)
+        self.run_action(self.case_manager, "submit_selected", record)
+        record.refresh_from_db()
+        self.assertEqual(record.status, CounselingRecord.Status.SUBMITTED)
+
+        self.run_action(self.lead, "return_selected", record)
+        record.refresh_from_db()
+        self.assertEqual(record.status, CounselingRecord.Status.RETURNED)
+
+        self.run_action(self.case_manager, "submit_selected", record)
+        self.run_action(self.lead, "review_selected", record)
+        record.refresh_from_db()
+        self.assertEqual(record.status, CounselingRecord.Status.REVIEWED)
+        self.assertEqual(record.reviewed_by, self.lead)
+
+        self.run_action(self.lead, "lock_selected", record)
+        record.refresh_from_db()
+        self.assertEqual(record.status, CounselingRecord.Status.LOCKED)
+        self.assertEqual(record.locked_by, self.lead)
+        self.assertEqual(
+            list(AuditEvent.objects.filter(target_pk=str(record.pk)).values_list("event_type", flat=True)),
+            [
+                AuditEvent.EventType.COUNSELING_LOCKED,
+                AuditEvent.EventType.COUNSELING_REVIEWED,
+                AuditEvent.EventType.COUNSELING_SUBMITTED,
+                AuditEvent.EventType.COUNSELING_RETURNED,
+                AuditEvent.EventType.COUNSELING_SUBMITTED,
+                AuditEvent.EventType.COUNSELING_CREATED,
+            ],
+        )
+
+    def test_case_manager_cannot_edit_submitted_record_or_review_it(self):
+        record = self.create_record()
+        self.run_action(self.case_manager, "submit_selected", record)
+
+        self.client.force_login(self.case_manager)
+        response = self.client.get(reverse("admin:accounts_counselingrecord_change", args=[record.pk]))
+        review_response = self.run_action(self.case_manager, "review_selected", record)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'name="summary"')
+        self.assertEqual(review_response.status_code, 403)
+
+    def test_locked_record_and_audit_events_are_read_only(self):
+        record = self.create_record()
+        self.run_action(self.case_manager, "submit_selected", record)
+        self.run_action(self.lead, "review_selected", record)
+        self.run_action(self.lead, "lock_selected", record)
+        from .models import AuditEvent
+
+        self.client.force_login(self.lead)
+        record_response = self.client.get(reverse("admin:accounts_counselingrecord_change", args=[record.pk]))
+        audit_response = self.client.get(reverse("admin:accounts_auditevent_change", args=[AuditEvent.objects.first().pk]))
+
+        self.assertEqual(record_response.status_code, 200)
+        self.assertNotContains(record_response, 'name="summary"')
+        self.assertEqual(audit_response.status_code, 200)
+        self.assertNotContains(audit_response, 'name="summary"')
+
+    def test_homeroom_and_course_teachers_follow_their_counseling_scopes(self):
+        from .models import CounselingRecord, CoursePlan, IGPPlan, SemesterPlan
+        from .policies import (
+            can_add_counseling_record,
+            can_edit_counseling_record,
+            counseling_records_for,
+        )
+
+        homeroom = get_user_model().objects.create_user(
+            username="counseling-homeroom", email="counseling-homeroom@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.HOMEROOM_TEACHER,
+            is_approved=True, is_staff=True,
+        )
+        course_teacher = get_user_model().objects.create_user(
+            username="counseling-course", email="counseling-course@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.COURSE_TEACHER,
+            is_approved=True, is_staff=True,
+        )
+        homeroom_teacher = Teacher.objects.create(full_name="班級導師", account=homeroom)
+        course_teacher_record = Teacher.objects.create(full_name="任課教師", account=course_teacher)
+        StudentStaffAssignment.objects.create(
+            student=self.student, staff=homeroom_teacher,
+            role=StudentStaffAssignment.Role.HOMEROOM_TEACHER,
+        )
+        annual = IGPPlan.objects.create(student=self.student, academic_year="115", overall_goal="goal")
+        semester = SemesterPlan.objects.create(igp_plan=annual, semester=1, goals="goal")
+        CoursePlan.objects.create(
+            semester_plan=semester, course_name="數學", teacher=course_teacher_record, goals="goal",
+        )
+        case_record = CounselingRecord.objects.create(
+            student=self.student, author=self.case_manager, event="個管紀錄", summary="summary",
+        )
+        homeroom_record = CounselingRecord.objects.create(
+            student=self.student, author=homeroom, event="導師紀錄", summary="summary",
+        )
+        course_record = CounselingRecord.objects.create(
+            student=self.student, author=course_teacher, event="任課紀錄", summary="summary",
+        )
+
+        self.assertSetEqual(
+            set(counseling_records_for(homeroom).values_list("pk", flat=True)),
+            {case_record.pk, homeroom_record.pk, course_record.pk},
+        )
+        self.assertTrue(can_add_counseling_record(homeroom, self.student))
+        self.assertFalse(can_add_counseling_record(homeroom, self.hidden_student))
+        self.assertTrue(can_edit_counseling_record(homeroom, homeroom_record))
+        self.assertFalse(can_edit_counseling_record(homeroom, case_record))
+
+        self.client.force_login(homeroom)
+        homeroom_list = self.client.get(self.records_url(self.student))
+        own_change = self.client.get(reverse("admin:accounts_counselingrecord_change", args=[homeroom_record.pk]))
+        other_change = self.client.get(reverse("admin:accounts_counselingrecord_change", args=[case_record.pk]))
+        self.assertContains(homeroom_list, case_record.event)
+        self.assertContains(homeroom_list, homeroom_record.event)
+        self.assertEqual(own_change.status_code, 200)
+        self.assertContains(own_change, 'name="summary"')
+        self.assertEqual(other_change.status_code, 200)
+        self.assertNotContains(other_change, 'name="summary"')
+
+        self.assertSetEqual(
+            set(counseling_records_for(course_teacher).values_list("pk", flat=True)),
+            {course_record.pk},
+        )
+        self.assertTrue(can_add_counseling_record(course_teacher, self.student))
+        self.assertFalse(can_add_counseling_record(course_teacher, self.hidden_student))
+        self.assertTrue(can_edit_counseling_record(course_teacher, course_record))
+        self.assertFalse(can_edit_counseling_record(course_teacher, case_record))
+
+        self.client.force_login(course_teacher)
+        add_page = self.client.get(reverse("admin:accounts_counselingrecord_add"))
+        self.assertContains(add_page, self.student.full_name)
+        self.assertNotContains(add_page, self.hidden_student.full_name)
+
+    def test_case_manager_can_author_course_students_without_viewing_others_records(self):
+        from django.contrib import admin as django_admin
+        from django.test import RequestFactory
+
+        from .admin import CoursePlanAdmin
+        from .models import CounselingRecord, CoursePlan, IGPPlan, SemesterPlan
+        from .policies import counseling_records_for, students_for_course_plans
+
+        case_teacher = Teacher.objects.get(account=self.case_manager)
+        course_students = [self.student, self.hidden_student]
+        course_students.extend(Student.objects.create(full_name=f"任課學生 {index}") for index in range(3, 5))
+        for student in course_students:
+            annual = IGPPlan.objects.create(student=student, academic_year="115", overall_goal="goal")
+            semester = SemesterPlan.objects.create(igp_plan=annual, semester=1, goals="goal")
+            CoursePlan.objects.create(
+                semester_plan=semester, course_name="跨領域專題", teacher=case_teacher, goals="goal",
+            )
+
+        own_course_record = CounselingRecord.objects.create(
+            student=self.hidden_student, author=self.case_manager,
+            event="任課學生紀錄", summary="個管教師兼任授課教師的紀錄。",
+        )
+        other_record = CounselingRecord.objects.create(
+            student=self.hidden_student, author=self.hidden_case_manager,
+            event="他人紀錄", summary="不應被個管教師甲讀取。",
+        )
+
+        self.assertSetEqual(
+            set(students_for_course_plans(self.case_manager).values_list("pk", flat=True)),
+            {student.pk for student in course_students},
+        )
+        self.assertIn(own_course_record.pk, counseling_records_for(self.case_manager).values_list("pk", flat=True))
+        self.assertNotIn(other_record.pk, counseling_records_for(self.case_manager).values_list("pk", flat=True))
+
+        request = RequestFactory().get("/admin/accounts/courseplan/")
+        request.user = self.case_manager
+        course_admin = CoursePlanAdmin(CoursePlan, django_admin.site)
+        self.assertSetEqual(
+            set(course_admin.get_queryset(request).values_list("semester_plan__igp_plan__student_id", flat=True)),
+            {student.pk for student in course_students},
+        )
+
+        off_course_student = Student.objects.create(full_name="未任課學生")
+        self.client.force_login(self.case_manager)
+        add_page = self.client.get(reverse("admin:accounts_counselingrecord_add"))
+        self.assertContains(add_page, self.hidden_student.full_name)
+        self.assertNotContains(add_page, off_course_student.full_name)
+        change_page = self.client.get(reverse("admin:accounts_counselingrecord_change", args=[own_course_record.pk]))
+        self.assertEqual(change_page.status_code, 200)
+        self.assertContains(change_page, 'name="summary"')
+
+    def test_actual_case_assignment_is_honored_for_a_different_primary_role(self):
+        from .models import CounselingRecord
+        from .policies import (
+            counseling_records_for,
+            students_for_counseling_authoring,
+            students_for_counseling_index,
+        )
+
+        multi_role_user = get_user_model().objects.create_user(
+            username="multi-role-case", email="multi-role-case@example.edu.tw",
+            password="safe-test-password", role=get_user_model().Role.COURSE_TEACHER,
+            is_approved=True, is_staff=True,
+        )
+        multi_role_teacher = Teacher.objects.create(full_name="兼任個管教師", account=multi_role_user)
+        StudentStaffAssignment.objects.create(
+            student=self.hidden_student,
+            staff=multi_role_teacher,
+            role=StudentStaffAssignment.Role.CASE_MANAGER,
+        )
+        other_record = CounselingRecord.objects.create(
+            student=self.hidden_student,
+            author=self.hidden_case_manager,
+            event="既有個管紀錄",
+            summary="多重身分個管應可閱讀。",
+        )
+
+        self.assertIn(self.hidden_student, students_for_counseling_authoring(multi_role_user))
+        self.assertIn(self.hidden_student, students_for_counseling_index(multi_role_user))
+        self.assertIn(other_record, counseling_records_for(multi_role_user))
+
+        self.client.force_login(multi_role_user)
+        student_list = self.client.get(self.list_url)
+        record_list = self.client.get(self.records_url(self.hidden_student))
+        add_page = self.client.get(reverse("admin:accounts_counselingrecord_add") + f"?student={self.hidden_student.pk}")
+
+        self.assertContains(student_list, self.hidden_student.full_name)
+        self.assertContains(record_list, other_record.event)
+        self.assertContains(add_page, f'value="{self.hidden_student.pk}" selected')
+    def test_counseling_form_saves_required_columns_and_lead_can_optionally_add_review_note(self):
+        self.client.force_login(self.case_manager)
+        response = self.client.post(reverse("admin:accounts_counselingrecord_add"), {
+            "student": self.student.pk,
+            "academic_year": "115",
+            "recorded_on": "2026-07-15",
+            "participants": ["本人", "家長", "原班導師", "個管老師", "資優任課"],
+            "participants_other": "輔導教師",
+            "event": "親師晤談",
+            "summary": "討論近期學習壓力與作業安排。",
+            "intervention": ["定期晤談", "持續觀察"],
+            "intervention_other": "安排時間管理練習",
+            "_save": "儲存",
+        })
+        self.assertEqual(response.status_code, 302)
+        from .models import CounselingRecord
+        record = CounselingRecord.objects.get()
+        self.assertEqual(record.participants, "本人、家長、原班導師、個管老師、資優任課、其他：輔導教師")
+        self.assertEqual(record.event, "親師晤談")
+        self.assertEqual(record.summary, "討論近期學習壓力與作業安排。")
+        self.assertEqual(record.intervention, "定期晤談、持續觀察、其他：安排時間管理練習")
+
+        self.run_action(self.case_manager, "submit_selected", record)
+        self.client.force_login(self.lead)
+        change_url = reverse("admin:accounts_counselingrecord_change", args=[record.pk])
+        change_page = self.client.get(change_url)
+        self.assertContains(change_page, 'name="review_note"')
+        response = self.client.post(change_url, {"review_note": "建議持續追蹤。", "_save": "儲存"})
+        self.assertEqual(response.status_code, 302)
+        record.refresh_from_db()
+        self.assertEqual(record.review_note, "建議持續追蹤。")

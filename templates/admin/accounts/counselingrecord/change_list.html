@@ -1,0 +1,14 @@
+{% extends "admin/change_list.html" %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">首頁</a>
+  &rsaquo; <a href="{% url 'admin:accounts_counselingrecord_changelist' %}">輔導紀錄</a>
+  &rsaquo; {{ current_student.full_name }}
+</div>
+{% endblock %}
+{% block object-tools-items %}
+  <li><a href="{% url 'admin:accounts_counselingrecord_changelist' %}">返回學生列表</a></li>
+  {% if can_add_for_student %}
+  <li><a class="addlink" href="{% url 'admin:accounts_counselingrecord_add' %}?student={{ current_student.pk }}">新增此學生的輔導紀錄</a></li>
+  {% endif %}
+{% endblock %}

@@ -1,4 +1,4 @@
-﻿from datetime import date
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -451,3 +451,67 @@ class LearningOutcome(models.Model):
 
     def __str__(self):
         return f"{self.course_plan}－{self.recorded_on}"
+
+
+class CounselingRecord(models.Model):
+    class Status(models.TextChoices):
+        DRAFT = "draft", "草稿"
+        SUBMITTED = "submitted", "已送審"
+        RETURNED = "returned", "退回修正"
+        REVIEWED = "reviewed", "已審核"
+        LOCKED = "locked", "已鎖定"
+
+    student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="counseling_records")
+    academic_year = models.CharField("學年度", max_length=16, blank=True)
+    recorded_on = models.DateField("紀錄日期", default=timezone.localdate)
+    participants = models.TextField("參與人員", blank=True)
+    event = models.CharField("事件", max_length=150)
+    summary = models.TextField("內容概要敘述")
+    intervention = models.TextField("處遇方式", blank=True)
+    author = models.ForeignKey(User, verbose_name="記錄人員", on_delete=models.PROTECT, related_name="authored_counseling_records")
+    status = models.CharField("狀態", max_length=16, choices=Status.choices, default=Status.DRAFT)
+    review_note = models.TextField("審核意見", blank=True)
+    submitted_at = models.DateTimeField("送審時間", null=True, blank=True)
+    reviewed_by = models.ForeignKey(User, verbose_name="審核者", on_delete=models.PROTECT, null=True, blank=True, related_name="reviewed_counseling_records")
+    reviewed_at = models.DateTimeField("審核時間", null=True, blank=True)
+    locked_by = models.ForeignKey(User, verbose_name="鎖定者", on_delete=models.PROTECT, null=True, blank=True, related_name="locked_counseling_records")
+    locked_at = models.DateTimeField("鎖定時間", null=True, blank=True)
+    created_at = models.DateTimeField("建立時間", auto_now_add=True)
+    updated_at = models.DateTimeField("更新時間", auto_now=True)
+
+    class Meta:
+        verbose_name = "輔導紀錄"
+        verbose_name_plural = "輔導紀錄"
+        ordering = ["-recorded_on", "-id"]
+
+    def __str__(self):
+        return f"{self.student}－{self.recorded_on} {self.event}"
+
+
+class AuditEvent(models.Model):
+    class EventType(models.TextChoices):
+        COUNSELING_CREATED = "counseling_created", "建立輔導紀錄"
+        COUNSELING_SUBMITTED = "counseling_submitted", "送審輔導紀錄"
+        COUNSELING_RETURNED = "counseling_returned", "退回輔導紀錄"
+        COUNSELING_REVIEWED = "counseling_reviewed", "審核輔導紀錄"
+        COUNSELING_LOCKED = "counseling_locked", "鎖定輔導紀錄"
+        USER_PERMISSION_CHANGED = "user_permission_changed", "帳號權限變更"
+        ASSIGNMENT_CHANGED = "assignment_changed", "學生教師指派變更"
+        STUDENT_IMPORT_APPLIED = "student_import_applied", "匯入學生資料"
+        DOCUMENT_UPLOADED = "document_uploaded", "上傳課程文件"
+        DOCUMENT_DELETED = "document_deleted", "刪除課程文件"
+
+    occurred_at = models.DateTimeField("發生時間", auto_now_add=True)
+    actor = models.ForeignKey(User, verbose_name="操作者", on_delete=models.PROTECT, related_name="audit_events")
+    event_type = models.CharField("事件類型", max_length=32, choices=EventType.choices)
+    target_model = models.CharField("目標類型", max_length=100)
+    target_pk = models.CharField("目標識別", max_length=64)
+    summary = models.CharField("摘要", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "稽核事件"
+        verbose_name_plural = "稽核事件"
+        ordering = ["-occurred_at", "-id"]
+
+    def __str__(self):
+        return f"{self.get_event_type_display()}－{self.occurred_at:%Y-%m-%d %H:%M}"

@@ -1,0 +1,24 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<div id="content-main">
+  <p>請先選擇學生，再查看或新增該生的輔導紀錄。</p>
+  <table id="result_list">
+    <thead><tr><th>學生</th><th>年級</th><th>班別</th><th>座號</th><th>可見紀錄數</th><th>最近紀錄日期</th><th></th></tr></thead>
+    <tbody>
+      {% for student, can_add in student_rows %}
+      <tr>
+        <td><a href="{% url 'admin:accounts_counselingrecord_student_records' student.pk %}">{{ student.full_name }}</a></td>
+        <td>{{ student.grade|default_if_none:"—" }}</td>
+        <td>{{ student.class_name|default:"—" }}</td>
+        <td>{{ student.seat_number|default_if_none:"—" }}</td>
+        <td>{{ student.visible_record_count }}</td>
+        <td>{{ student.latest_recorded_on|date:"Y-m-d"|default:"—" }}</td>
+        <td>{% if can_add %}<a class="button" href="{% url 'admin:accounts_counselingrecord_add' %}?student={{ student.pk }}">新增輔導紀錄</a>{% endif %}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="7">目前沒有可查看或新增輔導紀錄的學生。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
