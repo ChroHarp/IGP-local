@@ -213,6 +213,18 @@ def _resize_data_rows(table, start, count):
     _clear_data_rows(table, start)
 
 
+def _set_table_page_behavior(table, header_rows, data_start):
+    for row in table.rows[:header_rows]:
+        properties = row._tr.get_or_add_trPr()
+        if properties.find(qn("w:tblHeader")) is None:
+            properties.append(OxmlElement("w:tblHeader"))
+
+    for row in table.rows[data_start:]:
+        properties = row._tr.get_or_add_trPr()
+        if properties.find(qn("w:cantSplit")) is None:
+            properties.append(OxmlElement("w:cantSplit"))
+
+
 def _body_text(element):
     return "".join(element.itertext()).replace(" ", "")
 
@@ -320,7 +332,8 @@ def _populate_basic_details(document, plan):
 
     assessments = list(student.assessments.all())
     table = document.tables[4]
-    _clear_data_rows(table, 2)
+    _resize_data_rows(table, 2, len(assessments))
+    _set_table_page_behavior(table, 2, 2)
     for row, assessment in zip(table.rows[2:], assessments):
         _set_row(row, [
             assessment.name,
@@ -330,7 +343,8 @@ def _populate_basic_details(document, plan):
 
     awards = list(student.award_records.order_by("pk"))
     table = document.tables[6]
-    _clear_data_rows(table, 3)
+    _resize_data_rows(table, 3, len(awards))
+    _set_table_page_behavior(table, 3, 3)
     for number, (row, award) in enumerate(zip(table.rows[3:], awards), start=1):
         _set_row(row, [number, award.award_date, award.activity_name, award.organizer, award.award, award.award_type, ""])
 
@@ -401,6 +415,7 @@ def _populate_course(header, performance_table, semester, course):
 
     performances = list(course.learning_performances.all())
     _resize_data_rows(performance_table, 2, len(performances))
+    _set_table_page_behavior(performance_table, 2, 2)
     for row, performance in zip(performance_table.rows[2:], performances):
         _set_cell(row.cells[0], performance.sort_order)
         _set_cell(row.cells[1], performance.description, underlined_text=performance.adjustment)
@@ -434,7 +449,8 @@ def _populate_counseling(document, plan):
         .order_by("recorded_on", "pk")
     )
     table = document.tables[-1]
-    _clear_data_rows(table, 1)
+    _resize_data_rows(table, 1, len(records))
+    _set_table_page_behavior(table, 1, 1)
     for row, record in zip(table.rows[1:], records):
         author = record.author.get_full_name() or record.author.username
         _set_row(row, [
