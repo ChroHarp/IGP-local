@@ -14,7 +14,7 @@ from django.test import TestCase
 from django.urls import reverse
 
 from .importers import import_basic_students
-from .models import AwardRecord, FamilyMember, Guardian, InitialIGPProfile, ProgramDocument, Student, StudentStaffAssignment, Teacher
+from .models import Assessment, AwardRecord, FamilyMember, Guardian, InitialIGPProfile, ProgramDocument, Student, StudentStaffAssignment, Teacher
 from .policies import approved_google_user_for_email, can_manage_learning_outcomes, visible_students_for
 
 
@@ -498,6 +498,63 @@ class PhaseFourDocumentTests(TestCase):
 
         self.assertEqual(len(course_tables), 7)
         self.assertIn("加開課程 6", {table.cell(0, 3).text for table in course_tables})
+
+    def test_docx_expands_assessment_award_and_counseling_tables(self):
+        from docx import Document
+        from docx.oxml.ns import qn
+
+        from .documents import build_igp_docx
+        from .models import CounselingRecord
+
+        for index in range(10):
+            Assessment.objects.create(
+                student=self.student,
+                name=f"Assessment {index + 1}",
+                assessed_on=date(2026, 1, 1) + timedelta(days=index),
+                result=f"Result {index + 1}",
+            )
+        for index in range(12):
+            AwardRecord.objects.create(
+                student=self.student,
+                award_date=f"2026/{index + 1}/01",
+                activity_name=f"Award {index + 1}",
+                organizer="Test organizer",
+                award="Honorable mention",
+                award_type="School",
+            )
+        for index in range(15):
+            CounselingRecord.objects.create(
+                student=self.student,
+                academic_year=self.plan.academic_year,
+                recorded_on=date(2026, 2, 1) + timedelta(days=index),
+                participants="Student",
+                event=f"Counseling event {index + 1}",
+                summary=f"Counseling summary {index + 1}",
+                intervention="Observe",
+                author=self.lead,
+            )
+
+        document = Document(BytesIO(build_igp_docx(self.plan)))
+        assessment_table = document.tables[4]
+        award_table = document.tables[6]
+        counseling_table = document.tables[-1]
+
+        self.assertEqual(len(assessment_table.rows), 12)
+        self.assertEqual(len(award_table.rows), 15)
+        self.assertEqual(len(counseling_table.rows), 16)
+        for table, header_rows, data_start in (
+            (assessment_table, 2, 2),
+            (award_table, 3, 3),
+            (counseling_table, 1, 1),
+        ):
+            for row in table.rows[:header_rows]:
+                self.assertIsNotNone(row._tr.trPr.find(qn("w:tblHeader")))
+            for row in table.rows[data_start:]:
+                self.assertIsNotNone(row._tr.trPr.find(qn("w:cantSplit")))
+        self.assertIn("Assessment 10", "\n".join(cell.text for row in assessment_table.rows for cell in row.cells))
+        self.assertIn("Award 12", "\n".join(cell.text for row in award_table.rows for cell in row.cells))
+        self.assertIn("Counseling event 15", "\n".join(cell.text for row in counseling_table.rows for cell in row.cells))
+
     def test_export_requires_a_semester_plan(self):
         from .documents import IGPDocumentError, build_igp_docx
         from .models import IGPPlan
