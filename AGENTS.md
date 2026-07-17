@@ -42,3 +42,8 @@ Recent history uses short, imperative subjects such as `Add IGP learning outcome
 ## Security & Configuration
 
 Copy settings from `.env.example`; never commit `.env`, SQLite databases, `media/`, logs, backups, OAuth secrets, or real student data. Preserve role-based visibility rules, and treat the initial superuser as an offline break-glass account.
+## Required Phase Workflow
+
+Before starting any implementation, read `PHASE3_SUMMARY.md` and this file. Confirm the requested change against the current Phase 3 permissions, data model, and known limitations before editing.
+
+After completing implementation, update `PHASE3_SUMMARY.md` with the user-visible change, any permission or migration impact, and validation performed. Then run the relevant checks, inspect the diff, commit the scoped work, and push it to GitHub. Do not push unrelated worktree changes.
