@@ -56,6 +56,7 @@ class Student(models.Model):
     student_number = models.CharField("學號", max_length=32, unique=True, null=True, blank=True)
     full_name = models.CharField("學生姓名", max_length=100)
     gender = models.CharField("性別", max_length=16, choices=Gender.choices, default=Gender.UNSPECIFIED)
+    gifted_categories = models.TextField("資優類別", blank=True)
     has_multiple_special_education_needs = models.BooleanField("雙重特教需求", default=False)
     date_of_birth = models.DateField("出生日期", null=True, blank=True)
     grade = models.PositiveSmallIntegerField("年級", null=True, blank=True)
@@ -195,6 +196,7 @@ def private_document_upload_to(instance, filename):
 class ProgramDocument(models.Model):
     class DocumentType(models.TextChoices):
         IGP_PLAN = "igp_plan", "IGP 計畫"
+        IGP_MEETING = "igp_meeting", "IGP 會議紀錄"
         COURSE_PLAN = "course_plan", "課程計畫"
         TIMETABLE = "timetable", "課表"
 
@@ -311,6 +313,26 @@ class Assessment(models.Model):
         return f"{self.student}－{self.name}"
 
 
+class AssessmentSubscale(models.Model):
+    assessment = models.ForeignKey(
+        Assessment,
+        verbose_name="評量紀錄",
+        on_delete=models.CASCADE,
+        related_name="subscales",
+    )
+    name = models.CharField("分量表", max_length=150)
+    score = models.CharField("分量成績", max_length=100)
+    sort_order = models.PositiveSmallIntegerField("排序", default=0)
+
+    class Meta:
+        verbose_name = "評量分量表"
+        verbose_name_plural = "評量分量表"
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.assessment}－{self.name}"
+
+
 class Interest(models.Model):
     student = models.ForeignKey(Student, verbose_name="學生", on_delete=models.CASCADE, related_name="interests")
     category = models.CharField("領域", max_length=100)
@@ -338,6 +360,10 @@ class IGPPlan(models.Model):
     emotional_needs = models.TextField("情意弱勢特質", blank=True)
     academic_needs = models.TextField("學科弱勢能力", blank=True)
     qualitative_analysis = models.TextField("優弱勢能力綜合評析（質性描述）", blank=True)
+    strength_math_science = models.TextField("優勢－學習領域（數理）", blank=True)
+    strength_language = models.TextField("優勢－學習領域（語文）", blank=True)
+    weakness_analysis = models.TextField("劣勢", blank=True)
+    affective_analysis = models.TextField("情意方面", blank=True)
     learning_strategies = models.TextField("學習策略", blank=True)
 
     class Meta:
@@ -357,6 +383,9 @@ class SemesterPlan(models.Model):
 
     igp_plan = models.ForeignKey(IGPPlan, verbose_name="IGP 年度計畫", on_delete=models.CASCADE, related_name="semester_plans")
     semester = models.PositiveSmallIntegerField("學期", choices=Semester.choices)
+    school_name = models.CharField("就讀學校", max_length=150, default="平興國中")
+    grade = models.PositiveSmallIntegerField("年級", null=True, blank=True)
+    class_number = models.PositiveSmallIntegerField("班級", null=True, blank=True)
     course_needs_assessment = models.TextField("課程需求評估", blank=True)
     learning_domains = models.TextField("領域學習課程", blank=True)
     special_needs_courses = models.TextField("特殊需求課程", blank=True)
@@ -371,6 +400,99 @@ class SemesterPlan(models.Model):
 
     def __str__(self):
         return f"{self.igp_plan}－{self.get_semester_display()}"
+
+
+class EducationTransitionRecord(models.Model):
+    class Stage(models.TextChoices):
+        GRADES_3_4 = "grades_3_4", "3-4年級"
+        GRADES_5_6 = "grades_5_6", "5-6年級"
+        JUNIOR_HIGH = "junior_high", "國中"
+
+    student = models.ForeignKey(
+        Student,
+        verbose_name="學生",
+        on_delete=models.CASCADE,
+        related_name="education_transition_records",
+    )
+    stage = models.CharField("階段", max_length=24, choices=Stage.choices)
+    school_name = models.CharField("校名", max_length=150, blank=True)
+    class_name = models.CharField("班級", max_length=32, blank=True)
+    homeroom_teacher = models.CharField("普通班導師", max_length=100, blank=True)
+    gifted_case_manager = models.CharField("資優教育個管教師", max_length=100, blank=True)
+    service_types = models.TextField("服務類型", blank=True)
+    other_service = models.CharField("其他服務說明", max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "教育轉銜紀錄"
+        verbose_name_plural = "教育轉銜紀錄"
+        ordering = ["stage", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "stage"],
+                name="unique_education_transition_stage_per_student",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.student}－{self.get_stage_display()}"
+
+
+class IGPMeeting(models.Model):
+    class MeetingType(models.TextChoices):
+        INITIAL = "initial", "期初會議"
+        FINAL = "final", "期末會議"
+
+    igp_plan = models.ForeignKey(
+        IGPPlan,
+        verbose_name="IGP 年度計畫",
+        on_delete=models.CASCADE,
+        related_name="meetings",
+    )
+    semester = models.PositiveSmallIntegerField("學期", choices=SemesterPlan.Semester.choices)
+    meeting_type = models.CharField("會議類型", max_length=16, choices=MeetingType.choices)
+    meeting_date = models.DateField("會議日期")
+    meeting_time = models.TimeField("時間", null=True, blank=True)
+    location = models.CharField("地點", max_length=150, blank=True)
+    recorder = models.CharField("記錄者", max_length=100, blank=True)
+    attendees = models.TextField("與會人員／簽到", blank=True)
+    minutes = models.TextField("會議紀錄", blank=True)
+
+    class Meta:
+        verbose_name = "IGP 會議紀錄"
+        verbose_name_plural = "IGP 會議紀錄"
+        ordering = ["-meeting_date", "-id"]
+
+    def __str__(self):
+        return f"{self.igp_plan}－{self.get_semester_display()} {self.get_meeting_type_display()}"
+
+
+class PlacementReviewRecord(models.Model):
+    student = models.ForeignKey(
+        Student,
+        verbose_name="學生",
+        on_delete=models.CASCADE,
+        related_name="placement_review_records",
+    )
+    recorded_on = models.DateField("日期", null=True, blank=True)
+    needs_description = models.TextField("評估需求說明", blank=True)
+    result_summary = models.TextField("評估結果概要敘述", blank=True)
+    recorder = models.CharField("記錄人員", max_length=100, blank=True)
+
+    class Meta:
+        verbose_name = "重新安置紀錄"
+        verbose_name_plural = "重新安置紀錄"
+        ordering = ["recorded_on", "id"]
+
+    def clean(self):
+        super().clean()
+        if not self.student_id:
+            return
+        existing = type(self).objects.filter(student_id=self.student_id).exclude(pk=self.pk)
+        if existing.count() >= 2:
+            raise ValidationError("每位學生最多只能建立 2 筆重新安置紀錄。")
+
+    def __str__(self):
+        return f"{self.student}－{self.recorded_on or '重新安置紀錄'}"
 
 
 class CoursePlan(models.Model):

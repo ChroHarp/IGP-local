@@ -3,6 +3,9 @@
 {% block object-tools-items %}
   {% if original %}
     <li>
+      <a class="button" href="{% url 'admin:accounts_igpmeeting_add' %}?igp_plan={{ original.pk }}">新增 IGP 會議紀錄</a>
+    </li>
+    <li>
       <form method="post" action="{% url 'admin:accounts_igpplan_export_docx' original.pk %}">
         {% csrf_token %}
         <button class="button" type="submit">產生 IGP DOCX</button>

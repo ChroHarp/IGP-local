@@ -7,7 +7,7 @@ from django.db.models import Q
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
-from .models import CounselingRecord, CoursePlan, IGPPlan, InitialIGPProfile, LearningPerformance, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
+from .models import CounselingRecord, CoursePlan, EducationTransitionRecord, IGPPlan, InitialIGPProfile, LearningPerformance, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 
 
 def split_choices(value):
@@ -22,6 +22,37 @@ class TagMultipleChoiceField(forms.MultipleChoiceField):
 
     def clean(self, value):
         return "、".join(super().clean(value))
+
+
+class StudentForm(forms.ModelForm):
+    GIFTED_CATEGORIES = ("一般智能", "創造能力", "數理", "英語", "自然")
+    gifted_categories = TagMultipleChoiceField(
+        label="資優類別",
+        required=False,
+        choices=[(choice, choice) for choice in GIFTED_CATEGORIES],
+        widget=forms.CheckboxSelectMultiple(attrs={"class": "tag-checkboxes"}),
+    )
+
+    class Meta:
+        model = Student
+        fields = "__all__"
+
+
+class EducationTransitionRecordForm(forms.ModelForm):
+    SERVICE_TYPES = (
+        "縮短修業年限", "資優資源班", "校本資優教育方案", "區域資優教育方案",
+        "身障巡迴輔導", "資優巡迴輔導", "身心障礙資源班", "其他",
+    )
+    service_types = TagMultipleChoiceField(
+        label="服務類型",
+        required=False,
+        choices=[(choice, choice) for choice in SERVICE_TYPES],
+        widget=forms.CheckboxSelectMultiple(attrs={"class": "tag-checkboxes"}),
+    )
+
+    class Meta:
+        model = EducationTransitionRecord
+        fields = "__all__"
 
 
 class StudentImportForm(forms.Form):

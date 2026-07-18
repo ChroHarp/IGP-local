@@ -207,6 +207,9 @@ class StudentAccessTests(TestCase):
         self.assertContains(response, "得獎與紀錄")
         self.assertContains(response, "重視閱讀")
         self.assertContains(response, "科展")
+        self.assertContains(response, "資優類別")
+        self.assertContains(response, "教育轉銜紀錄")
+        self.assertContains(response, "重新安置紀錄")
     def test_igp_plans_default_to_the_school_academic_year(self):
         from .models import IGPPlan, SchoolSetting
 
@@ -555,6 +558,165 @@ class PhaseFourDocumentTests(TestCase):
         self.assertIn("Award 12", "\n".join(cell.text for row in award_table.rows for cell in row.cells))
         self.assertIn("Counseling event 15", "\n".join(cell.text for row in counseling_table.rows for cell in row.cells))
 
+    def test_docx_populates_new_phase_four_fields(self):
+        from docx import Document
+
+        from .documents import build_igp_docx
+        from .models import (
+            AssessmentSubscale,
+            CounselingRecord,
+            EducationTransitionRecord,
+            IGPMeeting,
+            PlacementReviewRecord,
+        )
+
+        self.student.gifted_categories = "數理、英語"
+        self.student.save(update_fields=("gifted_categories",))
+        self.semester.school_name = "轉入國中"
+        self.semester.grade = 8
+        self.semester.class_number = 2
+        self.semester.save(update_fields=("school_name", "grade", "class_number"))
+        InitialIGPProfile.objects.create(
+            student=self.student,
+            family_culture="一般生",
+            primary_caregiver="母親",
+            learning_supporter="父親",
+            household_economy="普通",
+            caregiving_style="民主式",
+            family_interaction="5",
+            science_interests="數學、天文",
+            arts_interests="閱讀",
+            other_interests="登山",
+        )
+        EducationTransitionRecord.objects.create(
+            student=self.student,
+            stage=EducationTransitionRecord.Stage.GRADES_5_6,
+            school_name="轉銜國小",
+            class_name="六年一班",
+            homeroom_teacher="王導師",
+            gifted_case_manager="李老師",
+            service_types="資優資源班、區域資優教育方案",
+        )
+        assessment = Assessment.objects.create(
+            student=self.student,
+            name="生涯興趣量表",
+            assessed_on=date(2026, 4, 1),
+            result="整體結果",
+        )
+        AssessmentSubscale.objects.create(assessment=assessment, name="研究型", score="90")
+        AwardRecord.objects.create(student=self.student, activity_name="數學競賽", award="第一名")
+        AwardRecord.objects.create(student=self.student, activity_name="英語競賽", award="佳作")
+        self.plan.strength_math_science = "數學推理佳"
+        self.plan.strength_language = "英語閱讀佳"
+        self.plan.weakness_analysis = "時間管理待加強"
+        self.plan.affective_analysis = "願意接受挑戰"
+        self.plan.save()
+        IGPMeeting.objects.create(
+            igp_plan=self.plan,
+            semester=1,
+            meeting_type=IGPMeeting.MeetingType.INITIAL,
+            meeting_date=date(2026, 8, 20),
+            meeting_time="09:30",
+            location="會議室",
+            recorder="紀錄教師",
+            attendees="家長、學生、導師",
+            minutes="確認課程與研究目標。",
+        )
+        PlacementReviewRecord.objects.create(
+            student=self.student,
+            recorded_on=date(2026, 6, 1),
+            needs_description="重新評估需求",
+            result_summary="維持原安置",
+            recorder="個管教師",
+        )
+        CounselingRecord.objects.create(
+            student=self.student,
+            academic_year="115",
+            recorded_on=date(2026, 9, 1),
+            participants="學生、家長",
+            event="期初晤談",
+            summary="確認學習適應情形。",
+            intervention="持續觀察",
+            author=self.lead,
+        )
+
+        document = Document(BytesIO(build_igp_docx(self.plan)))
+        self.assertEqual(document.tables[0].cell(1, 0).text, "115-1")
+        self.assertEqual(document.tables[0].cell(1, 1).text, "轉入國中")
+        self.assertEqual(document.tables[0].cell(1, 2).text, "802")
+        self.assertEqual(document.tables[1].rows[13].cells[-1].text, "一般生")
+        self.assertEqual(document.tables[5].cell(2, 0).text, "數學、天文")
+        self.assertIn("轉銜國小", document.tables[2].cell(3, 1).text)
+        self.assertIn("研究型：90", document.tables[4].cell(2, 2).text)
+        self.assertIn("數學推理佳", document.tables[8].cell(5, 0).text)
+        all_text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+        for value in (
+            "資優類別：數理、英語",
+            "數學競賽",
+            "英語競賽",
+            "確認課程與研究目標。",
+            "重新評估需求",
+            "確認學習適應情形。",
+        ):
+            self.assertIn(value, all_text)
+
+    def test_meeting_template_and_placement_limit(self):
+        from docx import Document
+
+        from .documents import build_igp_meeting_docx
+        from .models import IGPMeeting, PlacementReviewRecord
+
+        meeting = IGPMeeting.objects.create(
+            igp_plan=self.plan,
+            semester=1,
+            meeting_type=IGPMeeting.MeetingType.FINAL,
+            meeting_date=date(2027, 1, 10),
+            meeting_time="14:00",
+            location="資優教室",
+            recorder="測試教師",
+            attendees="學生、家長",
+            minutes="檢核本學期目標。",
+        )
+        content = build_igp_meeting_docx(meeting)
+        document = Document(BytesIO(content))
+        all_text = "\n".join(
+            [paragraph.text for paragraph in document.paragraphs]
+            + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+        )
+        for value in ("115學年度第1學期", "期末會議", "資優教室", "檢核本學期目標。"):
+            self.assertIn(value, all_text)
+
+        PlacementReviewRecord.objects.create(student=self.student, needs_description="第一次")
+        PlacementReviewRecord.objects.create(student=self.student, needs_description="第二次")
+        third = PlacementReviewRecord(student=self.student, needs_description="第三次")
+        with self.assertRaisesRegex(ValidationError, "最多只能建立 2 筆"):
+            third.full_clean()
+
+    def test_meeting_admin_export_saves_private_document(self):
+        from .models import IGPMeeting
+
+        meeting = IGPMeeting.objects.create(
+            igp_plan=self.plan,
+            semester=1,
+            meeting_type=IGPMeeting.MeetingType.INITIAL,
+            meeting_date=date(2026, 8, 20),
+            minutes="會議紀錄內容",
+        )
+        self.client.force_login(self.lead)
+        response = self.client.post(
+            reverse("admin:accounts_igpmeeting_export_docx", args=[meeting.pk])
+        )
+        document = ProgramDocument.objects.get(document_type=ProgramDocument.DocumentType.IGP_MEETING)
+        self.assertRedirects(
+            response,
+            reverse("program-document-download", args=[document.public_id]),
+            fetch_redirect_response=False,
+        )
+        self.assertEqual(document.student, self.student)
+        self.assertEqual(document.semester, 1)
     def test_export_requires_a_semester_plan(self):
         from .documents import IGPDocumentError, build_igp_docx
         from .models import IGPPlan

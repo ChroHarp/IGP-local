@@ -55,7 +55,7 @@
 {% endblock %}
 
 {% block inline_field_sets %}
-{% with guardian=inline_admin_formsets.0 family=inline_admin_formsets.1 profile=inline_admin_formsets.2 assessments=inline_admin_formsets.3 interests=inline_admin_formsets.4 awards=inline_admin_formsets.5 plans=inline_admin_formsets.6 %}
+{% with guardian=inline_admin_formsets.0 family=inline_admin_formsets.1 profile=inline_admin_formsets.2 transition=inline_admin_formsets.3 assessments=inline_admin_formsets.4 interests=inline_admin_formsets.5 awards=inline_admin_formsets.6 placement=inline_admin_formsets.7 plans=inline_admin_formsets.8 %}
 <section class="student-tab-panel" id="student-panel-family" role="tabpanel" aria-labelledby="student-tab-family">
   {% include guardian.opts.template with inline_admin_formset=guardian %}
   {% include family.opts.template with inline_admin_formset=family %}
@@ -64,11 +64,13 @@
 </section>
 <section class="student-tab-panel" id="student-panel-igp" role="tabpanel" aria-labelledby="student-tab-igp">
   <div id="student-ability-profile-fields"></div>
+  {% include transition.opts.template with inline_admin_formset=transition %}
   {% include assessments.opts.template with inline_admin_formset=assessments %}
   {% include interests.opts.template with inline_admin_formset=interests %}
 </section>
 <section class="student-tab-panel" id="student-panel-awards" role="tabpanel" aria-labelledby="student-tab-awards">
   {% include awards.opts.template with inline_admin_formset=awards %}
+  {% include placement.opts.template with inline_admin_formset=placement %}
   {% include plans.opts.template with inline_admin_formset=plans %}
   <div id="student-award-profile-fields"></div>
 </section>
@@ -119,11 +121,3 @@
 })();
 </script>
 {% endblock %}
-
-
-
-
-
-
-
-

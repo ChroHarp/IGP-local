@@ -12,10 +12,10 @@ from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.text import get_valid_filename
 
-from .documents import IGPDocumentError, build_igp_docx
-from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CounselingRecordForm, CourseGroupForm, CourseLearningPerformanceFormSet, CoursePlanForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
+from .documents import IGPDocumentError, build_igp_docx, build_igp_meeting_docx
+from .forms import BulkIGPPlanForm, BulkSemesterPlanForm, CopySemesterPlanForm, CounselingRecordForm, CourseGroupForm, CourseLearningPerformanceFormSet, CoursePlanForm, EducationTransitionRecordForm, IGPPlanForm, InitialIGPProfileForm, SemesterPlanForm, LearningPerformanceForm, StudentForm, StudentImportForm, TeacherCreateForm, TeacherStudentAssignmentForm
 from .importers import import_basic_students
-from .models import Assessment, AuditEvent, CounselingRecord, AwardRecord, CoursePlan, FamilyMember, Guardian, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
+from .models import Assessment, AssessmentSubscale, AuditEvent, CounselingRecord, AwardRecord, CoursePlan, EducationTransitionRecord, FamilyMember, Guardian, IGPMeeting, IGPPlan, InitialIGPProfile, Interest, LearningOutcomeRating, LearningPerformance, PlacementReviewRecord, ProgramDocument, SchoolSetting, SemesterPlan, Student, StudentStaffAssignment, Teacher, User
 from .policies import (
     can_add_student,
     can_edit_student,
@@ -71,7 +71,7 @@ def get_grouped_app_list(request, app_label=None):
     accounts_app = next((app for app in app_list if app["app_label"] == "accounts"), None)
     if not accounts_app:
         return app_list
-    igp_models = {"igpplan", "semesterplan", "courseplan", "learningoutcomerating", "counselingrecord"}
+    igp_models = {"igpplan", "semesterplan", "courseplan", "learningoutcomerating", "counselingrecord", "igpmeeting"}
     models = [model for model in accounts_app["models"] if model["object_name"].lower() in igp_models]
     if not models:
         return app_list
@@ -161,6 +161,19 @@ class AwardRecordInline(StudentRelatedInlinePermissions, admin.TabularInline):
 class AssessmentInline(StudentRelatedInlinePermissions, admin.TabularInline):
     model = Assessment
     extra = 0
+    show_change_link = True
+
+
+class EducationTransitionRecordInline(StudentRelatedInlinePermissions, admin.TabularInline):
+    model = EducationTransitionRecord
+    form = EducationTransitionRecordForm
+    extra = 0
+
+
+class PlacementReviewRecordInline(StudentRelatedInlinePermissions, admin.TabularInline):
+    model = PlacementReviewRecord
+    extra = 0
+    max_num = 2
 
 
 class InterestInline(StudentRelatedInlinePermissions, admin.TabularInline):
@@ -176,7 +189,8 @@ class IGPPlanInline(StudentRelatedInlinePermissions, admin.StackedInline):
         ("年度目標", {"fields": ("academic_year", "overall_goal")}),
         ("優勢能力", {"fields": ("cognitive_strengths", "emotional_strengths", "academic_strengths")}),
         ("弱勢需求", {"fields": ("cognitive_needs", "emotional_needs", "academic_needs")}),
-        ("綜合評析與策略", {"fields": ("qualitative_analysis", "learning_strategies", "notes")}),
+        ("優弱勢能力綜合評析", {"fields": ("strength_math_science", "strength_language", "weakness_analysis", "affective_analysis", "qualitative_analysis")}),
+        ("策略與備註", {"fields": ("learning_strategies", "notes")}),
     )
 
     def has_delete_permission(self, request, obj=None):
@@ -185,14 +199,15 @@ class IGPPlanInline(StudentRelatedInlinePermissions, admin.StackedInline):
 
 @admin.register(Student)
 class StudentAdmin(admin.ModelAdmin):
+    form = StudentForm
     list_display = ("full_name", "grade", "class_name", "seat_number", "is_active")
     list_filter = ("is_active", "grade", "gender")
     search_fields = ("full_name", "student_number", "class_name")
-    inlines = (GuardianInline, FamilyMemberInline, InitialIGPProfileInline, AssessmentInline, InterestInline, AwardRecordInline, IGPPlanInline)
+    inlines = (GuardianInline, FamilyMemberInline, InitialIGPProfileInline, EducationTransitionRecordInline, AssessmentInline, InterestInline, AwardRecordInline, PlacementReviewRecordInline, IGPPlanInline)
     change_list_template = "admin/accounts/student/change_list.html"
     change_form_template = "admin/accounts/student/change_form.html"
     fieldsets = (
-        ("基本資料", {"fields": ("student_number", "full_name", "gender", "has_multiple_special_education_needs", "date_of_birth", "grade", "class_name", "seat_number", "email", "home_phone", "address", "is_active")}),
+        ("基本資料", {"fields": ("student_number", "full_name", "gender", "gifted_categories", "has_multiple_special_education_needs", "date_of_birth", "grade", "class_name", "seat_number", "email", "home_phone", "address", "is_active")}),
     )
 
     def get_urls(self):
@@ -267,6 +282,19 @@ class StudentDataAdmin(admin.ModelAdmin):
         return can_edit_student(request.user, self.student_for(obj)) if obj else can_view_student(request.user)
 
 
+class AssessmentSubscaleInline(admin.TabularInline):
+    model = AssessmentSubscale
+    extra = 1
+
+
+@admin.register(Assessment)
+class AssessmentAdmin(StudentDataAdmin):
+    inlines = (AssessmentSubscaleInline,)
+    list_display = ("student", "name", "assessed_on", "result")
+    list_filter = ("assessed_on",)
+    search_fields = ("student__full_name", "name", "result", "subscales__name", "subscales__score")
+
+
 @admin.register(IGPPlan)
 class IGPPlanAdmin(StudentDataAdmin):
     form = IGPPlanForm
@@ -275,7 +303,8 @@ class IGPPlanAdmin(StudentDataAdmin):
         ("基本資料", {"fields": ("student", "academic_year", "overall_goal")}),
         ("優勢能力", {"fields": ("cognitive_strengths", "emotional_strengths", "academic_strengths")}),
         ("弱勢需求", {"fields": ("cognitive_needs", "emotional_needs", "academic_needs")}),
-        ("綜合評析與策略", {"fields": ("qualitative_analysis", "learning_strategies", "notes")}),
+        ("優弱勢能力綜合評析", {"fields": ("strength_math_science", "strength_language", "weakness_analysis", "affective_analysis", "qualitative_analysis")}),
+        ("策略與備註", {"fields": ("learning_strategies", "notes")}),
     )
     change_list_template = "admin/accounts/igpplan/change_list.html"
     list_display = ("student", "academic_year", "overall_goal")
@@ -361,7 +390,7 @@ class IGPPlanAdmin(StudentDataAdmin):
             academic_year=current_academic_year(),
         )
         if request.method == "POST" and form.is_valid():
-            fields = ("overall_goal", "notes", "cognitive_strengths", "emotional_strengths", "academic_strengths", "cognitive_needs", "emotional_needs", "academic_needs", "qualitative_analysis", "learning_strategies")
+            fields = ("overall_goal", "notes", "cognitive_strengths", "emotional_strengths", "academic_strengths", "cognitive_needs", "emotional_needs", "academic_needs", "strength_math_science", "strength_language", "weakness_analysis", "affective_analysis", "qualitative_analysis", "learning_strategies")
             defaults = {field: getattr(source, field) for field in fields}
             for student in form.cleaned_data["students"]:
                 IGPPlan.objects.get_or_create(student=student, academic_year=form.cleaned_data["academic_year"], defaults=defaults)
@@ -387,6 +416,60 @@ class IGPPlanAdmin(StudentDataAdmin):
         })
 
 
+@admin.register(IGPMeeting)
+class IGPMeetingAdmin(StudentDataAdmin):
+    change_form_template = "admin/accounts/igpmeeting/change_form.html"
+    student_lookup = "igp_plan__student"
+    parent_field = "igp_plan"
+    parent_student_lookup = "student"
+    list_display = ("igp_plan", "semester", "meeting_type", "meeting_date", "location", "recorder")
+    list_filter = ("semester", "meeting_type", "igp_plan__academic_year")
+    search_fields = ("igp_plan__student__full_name", "location", "recorder", "minutes")
+    fieldsets = (
+        ("會議表頭", {"fields": ("igp_plan", "semester", "meeting_type", "meeting_date", "meeting_time", "location", "recorder")}),
+        ("會議內容", {"fields": ("attendees", "minutes")}),
+    )
+
+    def get_urls(self):
+        return [
+            path("<int:meeting_id>/export-docx/", self.admin_site.admin_view(self.export_docx_view), name="accounts_igpmeeting_export_docx"),
+        ] + super().get_urls()
+
+    def export_docx_view(self, request, meeting_id):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        meeting = get_object_or_404(
+            IGPMeeting.objects.select_related("igp_plan__student").filter(
+                igp_plan__student__in=visible_students_for(request.user)
+            ),
+            pk=meeting_id,
+        )
+        content = build_igp_meeting_docx(meeting)
+        plan = meeting.igp_plan
+        filename = get_valid_filename(
+            f"{plan.academic_year}_{meeting.semester}_{plan.student.full_name}_{meeting.get_meeting_type_display()}.docx"
+        )
+        document = ProgramDocument(
+            student=plan.student,
+            document_type=ProgramDocument.DocumentType.IGP_MEETING,
+            title=f"{plan.academic_year} 學年度第 {meeting.semester} 學期 {plan.student.full_name} {meeting.get_meeting_type_display()}",
+            academic_year=plan.academic_year,
+            semester=meeting.semester,
+            document_file=ContentFile(content, name=filename),
+            uploaded_by=request.user,
+        )
+        document.full_clean()
+        with transaction.atomic():
+            document.save()
+            record_audit_event(
+                actor=request.user,
+                event_type=AuditEvent.EventType.DOCUMENT_UPLOADED,
+                target=document,
+                summary=document.title,
+            )
+        return HttpResponseRedirect(reverse("program-document-download", args=[document.public_id]))
+
+
 class CoursePlanInline(StudentRelatedInlinePermissions, admin.TabularInline):
     model = CoursePlan
     form = CoursePlanForm
@@ -404,7 +487,8 @@ class SemesterPlanAdmin(StudentDataAdmin):
     inlines = (CoursePlanInline,)
     fieldsets = (
         ("課程需求評估", {"fields": ("learning_domains", "special_needs_courses")}),
-        ("學期目標與策略", {"fields": ("igp_plan", "semester", "goals", "strategies")}),
+        ("學期基本資料", {"fields": ("igp_plan", "semester", "school_name", "grade", "class_number")}),
+        ("學期目標與策略", {"fields": ("goals", "strategies")}),
         ("舊版課程需求評估", {"fields": ("course_needs_assessment",), "classes": ("collapse",)}),
     )
     change_list_template = "admin/accounts/semesterplan/change_list.html"
@@ -488,6 +572,10 @@ class SemesterPlanAdmin(StudentDataAdmin):
                         "cognitive_needs": source.igp_plan.cognitive_needs,
                         "emotional_needs": source.igp_plan.emotional_needs,
                         "academic_needs": source.igp_plan.academic_needs,
+                        "strength_math_science": source.igp_plan.strength_math_science,
+                        "strength_language": source.igp_plan.strength_language,
+                        "weakness_analysis": source.igp_plan.weakness_analysis,
+                        "affective_analysis": source.igp_plan.affective_analysis,
                         "qualitative_analysis": source.igp_plan.qualitative_analysis,
                         "learning_strategies": source.igp_plan.learning_strategies,
                     },
@@ -495,7 +583,7 @@ class SemesterPlanAdmin(StudentDataAdmin):
                 target_semester, _ = SemesterPlan.objects.get_or_create(
                     igp_plan=target_igp,
                     semester=source.semester,
-                    defaults={"course_needs_assessment": source.course_needs_assessment, "learning_domains": source.learning_domains, "special_needs_courses": source.special_needs_courses, "goals": source.goals, "strategies": source.strategies},
+                    defaults={"school_name": source.school_name, "grade": source.grade, "class_number": source.class_number, "course_needs_assessment": source.course_needs_assessment, "learning_domains": source.learning_domains, "special_needs_courses": source.special_needs_courses, "goals": source.goals, "strategies": source.strategies},
                 )
                 for course in source.course_plans.filter(is_template=False):
                     CoursePlan.objects.get_or_create(
@@ -514,7 +602,7 @@ class SemesterPlanAdmin(StudentDataAdmin):
                             course_plan=target_course, description=performance.description,
                             defaults={"adjustment": performance.adjustment, "assessment_methods": performance.assessment_methods, "sort_order": performance.sort_order},
                         )
-            self.message_user(request, "年度計畫已建立；既有計畫未覆寫。?", messages.SUCCESS)
+            self.message_user(request, "年度計畫已建立；既有計畫未覆寫。", messages.SUCCESS)
             return HttpResponseRedirect(reverse("admin:accounts_semesterplan_changelist"))
         return TemplateResponse(request, "admin/accounts/igp/bulk_form.html", {
             **self.admin_site.each_context(request), "title": f"複製計畫：{source}", "form": form, "opts": self.model._meta,
@@ -1380,23 +1468,3 @@ class ProgramDocumentAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return can_manage_program_documents(request.user)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

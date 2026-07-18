@@ -11,10 +11,11 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from mailmerge import MailMerge
 
-from .models import SchoolSetting, StudentStaffAssignment
+from .models import EducationTransitionRecord, SchoolSetting, StudentStaffAssignment
 
 
 TEMPLATE_PATH = Path(settings.BASE_DIR) / "accounts" / "docx_templates" / "igp-template.docx"
+MEETING_TEMPLATE_PATH = Path(settings.BASE_DIR) / "accounts" / "docx_templates" / "igp-meeting-template.docx"
 
 
 class IGPDocumentError(ValueError):
@@ -190,6 +191,11 @@ def _set_cell(cell, text, *, underlined_text=""):
         cell._tc.remove(extra._p)
 
 
+def _prevent_cell_wrap(cell):
+    properties = cell._tc.get_or_add_tcPr()
+    if properties.find(qn("w:noWrap")) is None:
+        properties.append(OxmlElement("w:noWrap"))
+
 def _set_row(row, values):
     seen = set()
     for cell, value in zip(row.cells, values):
@@ -198,6 +204,37 @@ def _set_row(row, values):
         seen.add(cell._tc)
         _set_cell(cell, value)
 
+
+def _unique_cells(row):
+    cells = []
+    seen = set()
+    for cell in row.cells:
+        if cell._tc not in seen:
+            seen.add(cell._tc)
+            cells.append(cell)
+    return cells
+
+
+def _find_table(document, *required_text):
+    normalized = tuple(item.replace(" ", "") for item in required_text)
+    for table in document.tables:
+        text = _body_text(table._tbl)
+        if all(item in text for item in normalized):
+            return table
+    return None
+
+
+def _replace_matching_paragraph(document, marker, text):
+    paragraph = next((item for item in document.paragraphs if marker in item.text), None)
+    if paragraph is not None:
+        _replace_paragraph(paragraph, text)
+    return paragraph
+
+
+def _clear_matching_paragraphs(document, markers):
+    for paragraph in document.paragraphs:
+        if any(marker in paragraph.text for marker in markers):
+            _replace_paragraph(paragraph, "")
 
 def _clear_data_rows(table, start):
     for row in table.rows[start:]:
@@ -295,26 +332,56 @@ def _grade_for_year(student, current_year, target_year):
     return grade if grade > 0 else ""
 
 
+def _class_code(grade, class_number, fallback=""):
+    if grade and class_number is not None:
+        return f"{int(grade)}{int(class_number):02d}"
+    fallback = _value(fallback)
+    if fallback and fallback.isdigit() and grade and fallback.startswith(str(grade)):
+        return fallback
+    return fallback
+
+
+def _populate_header_options(document, plan):
+    categories = split_choices(plan.student.gifted_categories)
+    selected = "、".join(categories) if categories else "未填"
+    marker = next((p for p in document.paragraphs if "資優類別" in p.text), None)
+    if marker is not None:
+        _replace_paragraph(marker, f"資優類別：{selected}")
+    _clear_matching_paragraphs(document, ("一般智能", "創造能力", "學術性向"))
+
+
+def split_choices(value):
+    if not value:
+        return []
+    return [item.strip() for item in str(value).replace("，", "、").replace(",", "、").split("、") if item.strip()]
+
+
 def _populate_history(document, plan):
     student = plan.student
-    school = SchoolSetting.objects.first()
     homeroom = _assignment_name(student, StudentStaffAssignment.Role.HOMEROOM_TEACHER)
     case_manager = _assignment_name(student, StudentStaffAssignment.Role.CASE_MANAGER)
-    plans = list(student.igp_plans.order_by("academic_year", "pk"))[-8:]
+    semesters = list(
+        plan.student.igp_plans.order_by("academic_year", "pk")
+        .prefetch_related("semester_plans")
+    )
+    histories = [
+        (annual, semester)
+        for annual in semesters
+        for semester in annual.semester_plans.all()
+    ][-8:]
     table = document.tables[0]
     _clear_data_rows(table, 1)
-    for row, history in zip(table.rows[1:], plans):
-        grade = _grade_for_year(student, plan.academic_year, history.academic_year)
+    for row, (annual, semester) in zip(table.rows[1:], histories):
+        grade = semester.grade or _grade_for_year(student, plan.academic_year, annual.academic_year)
         _set_row(row, [
-            f"{history.academic_year}-1",
-            school.name if school else "",
-            f"{grade} / {student.class_name}" if grade else student.class_name,
-            homeroom if history.pk == plan.pk else "",
-            case_manager if history.pk == plan.pk else "",
+            f"{annual.academic_year}-{semester.semester}",
+            semester.school_name,
+            _class_code(grade, semester.class_number, student.class_name),
+            homeroom if annual.pk == plan.pk else "",
+            case_manager if annual.pk == plan.pk else "",
             "",
             "",
         ])
-
 
 def _remove_redundant_basic_page_break(document):
     paragraph = document.tables[1]._tbl.getnext()
@@ -326,20 +393,72 @@ def _remove_redundant_basic_page_break(document):
 
 def _populate_basic_details(document, plan):
     student = plan.student
+    profile = _profile_for(student)
     basic = document.tables[1]
     if student.email:
         _set_cell(basic.cell(2, 7), student.email)
 
-    assessments = list(student.assessments.all())
+    family_results = (
+        profile.family_culture if profile else "",
+        profile.primary_caregiver if profile else "",
+        profile.learning_supporter if profile else "",
+        profile.household_economy if profile else "",
+        profile.caregiving_style if profile else "",
+        profile.family_interaction if profile else "",
+    )
+    for row_index, value in zip(range(13, 19), family_results):
+        cells = _unique_cells(basic.rows[row_index])
+        if len(cells) > 1:
+            _set_cell(cells[1], value)
+
+    transitions = {
+        record.stage: record
+        for record in student.education_transition_records.order_by("stage", "pk")
+    }
+    transition_table = document.tables[2]
+    stages = (
+        (EducationTransitionRecord.Stage.GRADES_3_4, "國小 3-4年級"),
+        (EducationTransitionRecord.Stage.GRADES_5_6, "國小 5-6年級"),
+        (EducationTransitionRecord.Stage.JUNIOR_HIGH, "國中"),
+    )
+    for row, (stage, label) in zip(transition_table.rows[2:], stages):
+        record = transitions.get(stage)
+        if record is None:
+            _set_row(row, [label, "", "", "", "", ""])
+            continue
+        services = split_choices(record.service_types)
+        if record.other_service:
+            services.append(f"其他：{record.other_service}")
+        _set_row(row, [
+            label,
+            record.school_name,
+            record.class_name,
+            record.homeroom_teacher,
+            record.gifted_case_manager,
+            "、".join(services),
+        ])
+
+    assessments = list(student.assessments.prefetch_related("subscales").all())
     table = document.tables[4]
     _resize_data_rows(table, 2, len(assessments))
     _set_table_page_behavior(table, 2, 2)
     for row, assessment in zip(table.rows[2:], assessments):
+        subscales = [f"{subscale.name}：{subscale.score}" for subscale in assessment.subscales.all()]
+        result = "\n".join(filter(None, [assessment.result, *subscales, assessment.notes]))
         _set_row(row, [
             assessment.name,
-            assessment.assessed_on.strftime("%Y/%m/%d") if assessment.assessed_on else "",
-            "\n".join(filter(None, [assessment.result, assessment.notes])),
+            _roc_date(assessment.assessed_on),
+            result,
         ])
+
+    interest_table = document.tables[5]
+    interest_values = [
+        profile.science_interests if profile else "",
+        profile.arts_interests if profile else "",
+        profile.other_interests if profile else "",
+    ]
+    for cell, value in zip(_unique_cells(interest_table.rows[2]), interest_values):
+        _set_cell(cell, value)
 
     awards = list(student.award_records.order_by("pk"))
     table = document.tables[6]
@@ -347,7 +466,6 @@ def _populate_basic_details(document, plan):
     _set_table_page_behavior(table, 3, 3)
     for number, (row, award) in enumerate(zip(table.rows[3:], awards), start=1):
         _set_row(row, [number, award.award_date, award.activity_name, award.organizer, award.award, award.award_type, ""])
-
 
 def _grade_label(grade):
     return {3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九"}.get(grade, _value(grade))
@@ -373,6 +491,17 @@ def _populate_annual_analysis(document, plan):
             history.academic_needs,
         ])
 
+
+    analysis = "\n".join((
+        "優勢：",
+        f"學習領域（數理）：{plan.strength_math_science}",
+        f"學習領域（語文）：{plan.strength_language}",
+        f"劣勢：{plan.weakness_analysis}",
+        f"情意方面：{plan.affective_analysis}",
+        plan.qualitative_analysis,
+    ))
+    _set_cell(_unique_cells(table.rows[5])[0], analysis)
+    _set_cell(_unique_cells(table.rows[6])[0], "")
 
 def _populate_course_needs(document, semesters):
     table = document.tables[9]
@@ -442,25 +571,99 @@ def _populate_courses(document, semesters):
         _populate_course(header, performance_table, semester, course)
 
 
+def _roc_date(value):
+    if not value:
+        return ""
+    return f"{value.year - 1911}/{value.month}/{value.day}"
+
+def _meeting_values(meeting):
+    return {
+        "{{academic_year}}": meeting.igp_plan.academic_year,
+        "{{semester}}": meeting.semester,
+        "{{meeting_type}}": meeting.get_meeting_type_display(),
+        "{{meeting_date}}": meeting.meeting_date.strftime("%Y/%m/%d") if meeting.meeting_date else "",
+        "{{meeting_time}}": (meeting.meeting_time.strftime("%H:%M") if hasattr(meeting.meeting_time, "strftime") else _value(meeting.meeting_time)),
+        "{{location}}": meeting.location,
+        "{{recorder}}": meeting.recorder,
+        "{{attendees}}": meeting.attendees,
+        "{{minutes}}": meeting.minutes,
+    }
+
+
+def _replace_placeholders(document, values):
+    paragraphs = list(document.paragraphs)
+    for table in document.tables:
+        for row in table.rows:
+            for cell in _unique_cells(row):
+                paragraphs.extend(cell.paragraphs)
+    for paragraph in paragraphs:
+        replacement = paragraph.text
+        for marker, value in values.items():
+            replacement = replacement.replace(marker, _value(value))
+        if replacement != paragraph.text:
+            _replace_paragraph(paragraph, replacement)
+
+
+def _populate_meeting(document, plan):
+    meeting = plan.meetings.order_by("-meeting_date", "-pk").first()
+    if meeting is None:
+        return
+    _replace_matching_paragraph(
+        document,
+        "IGP期初/末會議",
+        f"{plan.academic_year}學年度第{meeting.semester}學期 {meeting.get_meeting_type_display()}",
+    )
+    date_text = meeting.meeting_date.strftime("%Y/%m/%d") if meeting.meeting_date else ""
+    time_text = meeting.meeting_time.strftime("%H:%M") if hasattr(meeting.meeting_time, "strftime") else _value(meeting.meeting_time)
+    _replace_matching_paragraph(
+        document,
+        "會議日期:",
+        f"會議日期：{date_text}  時間：{time_text}  地點：{meeting.location}  記錄者：{meeting.recorder}",
+    )
+    _replace_matching_paragraph(document, "與會人員:", f"與會人員（簽到）：{meeting.attendees}")
+    minutes_table = _find_table(document, "課程方面", "情意方面", "獨立研究")
+    if minutes_table is not None:
+        _set_cell(_unique_cells(minutes_table.rows[0])[0], meeting.minutes)
+
+
+def _populate_placement_reviews(document, plan):
+    records = list(plan.student.placement_review_records.order_by("recorded_on", "pk")[:2])
+    table = _find_table(document, "評估需求說明", "評估結果概要敘述", "記錄人員")
+    if table is None:
+        return
+    _resize_data_rows(table, 1, len(records))
+    _set_table_page_behavior(table, 1, 1)
+    for row, record in zip(table.rows[1:], records):
+        _set_row(row, [
+            _roc_date(record.recorded_on),
+            record.needs_description,
+            record.result_summary,
+            record.recorder,
+        ])
+        _prevent_cell_wrap(_unique_cells(row)[0])
+
 def _populate_counseling(document, plan):
     records = list(
         plan.student.counseling_records.filter(academic_year=plan.academic_year)
         .select_related("author")
         .order_by("recorded_on", "pk")
     )
-    table = document.tables[-1]
+    table = _find_table(document, "參與人員", "內容概要敘述", "處遇方式")
+    if table is None:
+        return
     _resize_data_rows(table, 1, len(records))
     _set_table_page_behavior(table, 1, 1)
     for row, record in zip(table.rows[1:], records):
         author = record.author.get_full_name() or record.author.username
         _set_row(row, [
-            record.recorded_on.strftime("%Y/%m/%d"),
+            _roc_date(record.recorded_on),
             record.participants,
             record.event,
             record.summary,
             record.intervention,
             author,
         ])
+        _prevent_cell_wrap(_unique_cells(row)[0])
 
 
 class _BlankCourse:
@@ -490,14 +693,26 @@ def build_igp_docx(plan):
     merged.seek(0)
 
     document = Document(merged)
+    _populate_header_options(document, plan)
     _populate_history(document, plan)
     _remove_redundant_basic_page_break(document)
     _populate_basic_details(document, plan)
     _populate_annual_analysis(document, plan)
     _populate_course_needs(document, semesters)
     _populate_courses(document, semesters)
+    _populate_meeting(document, plan)
+    _populate_placement_reviews(document, plan)
     _populate_counseling(document, plan)
 
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+def build_igp_meeting_docx(meeting):
+    if not MEETING_TEMPLATE_PATH.is_file():
+        raise IGPDocumentError("找不到 IGP 會議 DOCX 範本。")
+    document = Document(MEETING_TEMPLATE_PATH)
+    _replace_placeholders(document, _meeting_values(meeting))
     output = BytesIO()
     document.save(output)
     return output.getvalue()

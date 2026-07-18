@@ -1,0 +1,13 @@
+{% extends "admin/change_form.html" %}
+
+{% block object-tools-items %}
+  {% if original %}
+    <li>
+      <form method="post" action="{% url 'admin:accounts_igpmeeting_export_docx' original.pk %}">
+        {% csrf_token %}
+        <button class="button" type="submit">產生會議紀錄 DOCX</button>
+      </form>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
